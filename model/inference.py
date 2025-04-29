@@ -50,7 +50,8 @@ def preprocess_audio_bytes(audio_bytes: bytes, target_sr: int = SAMPLE_RATE, num
     try:
         # Используем io.BytesIO для чтения байтов как файла
         audio_stream = io.BytesIO(audio_bytes)
-        signal, sr = torchaudio.load(audio_stream) # torchaudio может читать из file-like object
+        # Указываем формат явно, т.к. читаем из байтов
+        signal, sr = torchaudio.load(audio_stream)
 
         # 1. Ресемплинг
         if sr != target_sr:

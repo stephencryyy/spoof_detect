@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package audio_spoof;
+
+// Сервис для детекции аудио дипфейков
+service AudioSpoofDetector {
+  // Метод для предсказания по одному аудио-чанку
+  // Принимает сырые аудиоданные (ожидается PCM float32, моно, 16000 Гц)
+  // Возвращает логит предсказания
+  rpc PredictChunk(PredictRequest) returns (PredictResponse);
+}
+
+// Запрос на предсказание
+message PredictRequest {
+  // Сырые аудиоданные чанка в виде байтов.
+  // Предполагается, что это массив float32, соответствующий
+  // ожидаемому SAMPLE_RATE (16000) и NUM_SAMPLES (64000)
+  // после десериализации. Клиент (Go/Python-worker) отвечает за
+  // правильную нарезку и формат данных перед отправкой.
+  bytes audio_chunk_data = 1;
+}
+
+// Ответ с предсказанием
+message PredictResponse {
+  // Предсказанный логит. Положительное значение -> Spoof.
+  float logit = 1;
+}

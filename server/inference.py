@@ -15,7 +15,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 MODEL_CHECKPOINT = "microsoft/wavlm-base"
 SAMPLE_RATE = 16000
 NUM_SAMPLES = 4 * SAMPLE_RATE # 64000 samples (4 seconds)
-CHECKPOINT_FILE = "training_checkpoint(1).pth" # Ожидается в той же директории
+CHECKPOINT_FILE = "chk3.pth" # Ожидается в той же директории
 
 # --- Класс модели (без изменений) ---
 class CustomWavLMForClassification(nn.Module):

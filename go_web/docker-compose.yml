@@ -52,9 +52,21 @@ services:
     networks:
       - app_network
 
+  redis_cache:
+    image: redis:7-alpine
+    container_name: redis_cache_service
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - app_network
+
 volumes:
   postgres_data: # Persists data even if the container is removed
   minio_data: # Define the volume for MinIO
+  redis_data: # Define the volume for Redis
 
 networks:
   app_network:

@@ -1,0 +1,341 @@
+Хорошо, я внесу указанные изменения в вашу детальную архитектуру. Основные корректировки коснутся `.proto` файла, описания ролей Python-сервиса и Frontend, а также способа сохранения и представления результатов.
+
+Вот обновленная архитектура:
+
+Отличная задача! Как ведущий системный архитектор, я разработаю для вас детальную архитектуру сервиса детектирования аудиодипфейков, учитывая все требования.
+
+**Общая философия проектирования:**
+
+* **Разделение ответственности (Separation of Concerns):** Каждый компонент выполняет четко определенную задачу. Go отвечает за API, бизнес-логику и управление данными, Python — за ML-обработку (предоставление "сырых" предсказаний по чанкам). React Frontend отвечает за отображение и интерпретацию этих предсказаний для пользователя, включая вычисление общей оценки.
+* **Асинхронность:** Детекция аудио — потенциально длительный процесс. Система должна обрабатывать запросы асинхронно, не блокируя пользователя.
+* **Масштабируемость:** Каждый слой системы должен иметь возможность горизонтального масштабирования независимо от других.
+* **Отказоустойчивость:** Система должна продолжать работу (возможно, с некоторой деградацией) при отказе отдельных компонентов.
+* **Безопасность:** Защита данных пользователя и самого сервиса — приоритет.
+
+---
+
+**1. Схемы взаимодействия компонентов**
+
+**1.1. Общая архитектурная схема**
+
+```mermaid
+graph TD
+    User[Пользователь] -- HTTPS --> Browser[React Frontend]
+
+    subgraph "User Interface Layer"
+        Browser
+    end
+
+    Browser -- REST API (HTTPS) --> APIGW[API Gateway / Load Balancer]
+
+    subgraph "API & Backend Logic Layer (Go)"
+        APIGW --> GoService1[Go REST API Instance 1]
+        APIGW --> GoService2[Go REST API Instance 2]
+        APIGW --> GoServiceN[Go REST API Instance N]
+        GoService1 -->|read/write| PostgreSQL[(PostgreSQL Cluster)]
+        GoService2 -->|read/write| PostgreSQL
+        GoServiceN -->|read/write| PostgreSQL
+        GoService1 -- gRPC --> PyLB[gRPC Load Balancer]
+        GoService2 -- gRPC --> PyLB
+        GoServiceN -- gRPC --> PyLB
+    end
+
+    subgraph "ML Processing Layer (Python)"
+        PyLB --> PyService1[Python gRPC WawLM Instance 1]
+        PyLB --> PyService2[Python gRPC WawLM Instance 2]
+        PyLB --> PyServiceM[Python gRPC WawLM Instance M]
+        PyService1 -->|read/write chunks| Redis[(Redis Cluster)]
+        PyService2 -->|read/write chunks| Redis
+        PyServiceM -->|read/write chunks| Redis
+    end
+
+    subgraph "Data Storage Layer"
+        PostgreSQL
+        Redis
+    end
+
+    subgraph "Monitoring Layer"
+        GoService1 -- metrics --> Prometheus[Prometheus Server]
+        PyService1 -- metrics --> Prometheus
+        PostgreSQL -- metrics (exporter) --> Prometheus
+        Redis -- metrics (exporter) --> Prometheus
+        Prometheus --> Grafana[Grafana]
+    end
+
+    style User fill:#f9f,stroke:#333,stroke-width:2px
+    style Browser fill:#ccf,stroke:#333,stroke-width:2px
+    style APIGW fill:#bbf,stroke:#333,stroke-width:2px
+    style GoService1 fill:#9f9,stroke:#333,stroke-width:2px
+    style GoService2 fill:#9f9,stroke:#333,stroke-width:2px
+    style GoServiceN fill:#9f9,stroke:#333,stroke-width:2px
+    style PyLB fill:#bbf,stroke:#333,stroke-width:2px
+    style PyService1 fill:#ff9,stroke:#333,stroke-width:2px
+    style PyService2 fill:#ff9,stroke:#333,stroke-width:2px
+    style PyServiceM fill:#ff9,stroke:#333,stroke-width:2px
+    style PostgreSQL fill:#fcf,stroke:#333,stroke-width:2px
+    style Redis fill:#fcf,stroke:#333,stroke-width:2px
+    style Prometheus fill:#99f,stroke:#333,stroke-width:2px
+    style Grafana fill:#99f,stroke:#333,stroke-width:2px
+```
+
+**1.2. Sequence Diagram (Основной сценарий)**
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant ReactFE as React Frontend
+    participant GoAPI as Go REST API Server
+    participant PostgreSQL as PostgreSQL DB
+    participant PythonGRPC as Python gRPC Service
+    participant Redis as Redis Cache
+    participant WavLM as WavLM Model (within Python)
+
+    User ->> ReactFE: Загружает аудиофайл
+    ReactFE ->> GoAPI: POST /api/v1/audio/upload (file, JWT)
+    GoAPI ->> GoAPI: Валидация JWT, проверка файла
+    alt Успешная аутентификация
+        GoAPI ->> PostgreSQL: INSERT INTO AudioFiles (user_id, original_filename, ...)
+        GoAPI ->> PostgreSQL: INSERT INTO DetectionHistory (audio_file_id, status='processing', ...)
+        GoAPI -->> ReactFE: HTTP 202 Accepted (request_id)
+        GoAPI ->> PythonGRPC: ProcessAudio(audio_data, request_id)
+        PythonGRPC ->> PythonGRPC: Конвертация аудио в WAV PCM 16kHz моно
+        PythonGRPC ->> PythonGRPC: Нарезка на чанки по 4 сек.
+        loop Для каждого чанка
+            PythonGRPC ->> Redis: SAVE chunk_data (key: request_id:chunk_idx)
+        end
+        PythonGRPC ->> PythonGRPC: Запуск параллельной обработки чанков
+        loop Для каждого чанка (параллельно)
+            PythonGRPC ->> Redis: GET chunk_data
+            PythonGRPC ->> WavLM: Infer(chunk_data)
+            WavLM -->> PythonGRPC: chunk_score_i (число от 0 до 1)
+        end
+        PythonGRPC ->> PythonGRPC: Сбор chunk_scores в map[string]ChunkPrediction
+        PythonGRPC -->> GoAPI: ProcessAudioResponse(map_of_chunk_scores)
+        GoAPI ->> PostgreSQL: UPDATE DetectionHistory SET status='completed', results=map_of_chunk_scores WHERE request_id=...
+        alt REST API Polling / WebSockets
+            ReactFE ->> GoAPI: GET /api/v1/audio/status/{request_id} (JWT)
+            GoAPI -->> ReactFE: {status: 'completed', results: map_of_chunk_scores}
+            ReactFE ->> ReactFE: Обработка map_of_chunk_scores, вычисление общей оценки
+        else или Server-Sent Events / WebSockets
+            GoAPI -->> ReactFE: Уведомление о готовности (map_of_chunk_scores)
+            ReactFE ->> ReactFE: Обработка map_of_chunk_scores, вычисление общей оценки
+        end
+    else Ошибка аутентификации
+        GoAPI -->> ReactFE: HTTP 401 Unauthorized
+    end
+```
+
+**1.3. Схема взаимодействия Go и Python (gRPC)**
+
+```mermaid
+graph LR
+    GoClient[Go REST API (gRPC Client)] -- 1. ProcessAudio(AudioDataRequest) --> PythonServer[Python gRPC Service (gRPC Server)]
+    PythonServer -- 2. Обработка (конвертация, нарезка, Redis, WavLM, сбор score по чанкам) --> PythonServer
+    PythonServer -- 3. AudioDetectionResponse(ChunkScoresMap) --> GoClient
+
+    subgraph Python gRPC Service
+        direction LR
+        gRPCInterface[gRPC Interface]
+        AudioPreprocessor[Audio Preprocessor]
+        ChunkManager[Chunk Manager (Redis I/O)]
+        WavLMWorkerPool[WavLM Worker Pool]
+        ResultAggregator[Result Aggregator (сбор chunk_scores)]
+
+        gRPCInterface -- аудио --> AudioPreprocessor
+        AudioPreprocessor -- обработанное аудио --> ChunkManager
+        ChunkManager -- чанки --> WavLMWorkerPool
+        WavLMWorkerPool -- результаты чанков (scores) --> ResultAggregator
+        ResultAggregator -- итоговый map (chunk_scores) --> gRPCInterface
+    end
+```
+
+**Протокол gRPC (пример .proto файла):**
+
+```protobuf
+syntax = "proto3";
+
+package deepfake_detector;
+
+service AudioDetection {
+  rpc ProcessAudio (AudioDataRequest) returns (AudioDetectionResponse);
+}
+
+message AudioDataRequest {
+  string request_id = 1;
+  bytes audio_content = 2; // Содержимое файла
+  string original_filename = 3; // Для информации и возможного выбора кодека
+}
+
+message ChunkPrediction {
+  // Оценка вероятности того, что чанк является дипфейком (0.0 до 1.0).
+  // 0.0 означает "очень вероятно настоящий", 1.0 - "очень вероятно фейк".
+  float score = 1;
+}
+
+message AudioDetectionResponse {
+  string request_id = 1;
+  map<string, ChunkPrediction> chunk_predictions = 2; // e.g., "chunk_0", "chunk_1"
+  // overall_assessment и overall_confidence удалены,
+  // так как эта логика перенесена на React Frontend.
+  string error_message = 3; // Если была ошибка в Python сервисе
+}
+```
+
+---
+
+**2. Компоненты и их роли**
+
+**2.1. React Frontend**
+
+* **Задачи:**
+    * Регистрация и аутентификация пользователей.
+    * Интерфейс для загрузки аудиофайлов.
+    * Отображение статуса обработки.
+    * **Получение "сырых" результатов детекции по чанкам (map числовых `score` от 0 до 1).**
+    * **Вычисление и визуализация общей оценки (например, "real", "likely_fake", "fake") и общей уверенности на основе полученных `score` чанков.**
+    * Визуализация `score` для каждого чанка (например, цветом, числом).
+    * Отображение истории проверок пользователя.
+* **Основные взаимодействия:**
+    * С Go REST API Server для всех операций.
+    * Использование JWT токенов в заголовках Authorization (Bearer token).
+    * Для получения результатов:
+        * **Polling:** Периодические запросы к эндпоинту статуса для получения `map` с `score` по чанкам.
+        * **WebSockets или Server-Sent Events (SSE):** Для асинхронного получения `map` с `score` по чанкам от сервера.
+
+**2.2. Go REST API Server**
+
+* **Эндпоинты:** (без изменений)
+    * `POST /api/v1/users/register`
+    * `POST /api/v1/users/login`
+    * `POST /api/v1/audio/upload`
+    * `GET /api/v1/audio/history`
+    * `GET /api/v1/audio/status/{request_id}`
+* **Логика работы с JWT:** (без изменений)
+* **Взаимодействие с PostgreSQL:**
+    * Использование ORM или `database/sql` с `sqlx`.
+    * Сохранение информации о пользователях, аудиофайлах, истории детекций.
+    * **При обновлении `DetectionHistory` поле `results` (JSONB) будет содержать `map` с `score` по чанкам, полученный от Python-сервиса.**
+    * Транзакции для атомарных операций.
+* **Взаимодействие с Python-сервисом:**
+    * gRPC клиент для вызова `ProcessAudio` на Python gRPC сервисе.
+    * Передача аудиоконтента и `request_id`.
+    * **Получение от Python-сервиса `AudioDetectionResponse`, содержащего `request_id`, `map<string, ChunkPrediction>` (где `ChunkPrediction` содержит только `score`), и `error_message`.**
+* **Обработка больших файлов при загрузке:** (без изменений)
+
+**2.3. Python gRPC Service**
+
+* **Методы gRPC:**
+    * `ProcessAudio(AudioDataRequest) returns (AudioDetectionResponse)`: Основной метод, принимающий аудиоданные и `request_id`. **Возвращает `map` числовых `score` (0.0-1.0) для каждого чанка.**
+* **Логика предобработки аудио:** (без изменений)
+    * Конвертация в WAV PCM, 16-bit, 16kHz, моно.
+    * Нарезка на чанки.
+* **Взаимодействие с Redis:** (без изменений)
+* **Параллелизация инференса WawLM:** (без изменений)
+* **Формирование итогового `map`:**
+    * Сбор результатов (`score` от 0.0 до 1.0) от всех воркеров для каждого чанка.
+    * **Формирование `AudioDetectionResponse`, содержащего `request_id` и `map<string, ChunkPrediction>`, где `ChunkPrediction` содержит только `score` для соответствующего чанка. Поле `error_message` заполняется при необходимости.**
+    * **Python-сервис НЕ вычисляет `overall_assessment` или `overall_confidence`.**
+
+**2.4. PostgreSQL**
+
+* **Структура таблиц:**
+
+    ```sql
+    CREATE TABLE Users (
+        id SERIAL PRIMARY KEY,
+        username VARCHAR(255) UNIQUE NOT NULL,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        password_hash VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE AudioFiles (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES Users(id) ON DELETE CASCADE,
+        original_filename VARCHAR(255) NOT NULL,
+        file_size_bytes BIGINT NOT NULL,
+        storage_type VARCHAR(20) DEFAULT 's3', 
+        storage_path VARCHAR(1024), 
+        content_type VARCHAR(100),
+        uploaded_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX idx_audiofiles_user_id ON AudioFiles(user_id);
+
+    CREATE TABLE DetectionHistory (
+        id SERIAL PRIMARY KEY,
+        request_id UUID DEFAULT gen_random_uuid() UNIQUE,
+        audio_file_id INTEGER NOT NULL REFERENCES AudioFiles(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES Users(id) ON DELETE CASCADE,
+        status VARCHAR(50) NOT NULL DEFAULT 'pending',
+        submitted_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        completed_at TIMESTAMP WITH TIME ZONE,
+        results JSONB, -- Хранение map { "chunk_id": {"score": 0.xx}, ... } от Python сервиса
+        -- Поля overall_assessment и overall_confidence теперь не заполняются напрямую из ответа Python.
+        -- Если они нужны в БД для бэкенд-фильтрации/аналитики, Go-сервис должен будет их вычислить
+        -- на основе данных из 'results' перед сохранением, либо они могут быть удалены из этой таблицы,
+        -- если их вычисление и использование происходит исключительно на фронтенде.
+        -- Для текущей постановки (Python возвращает только score), оставляем их, но с оговоркой.
+        overall_assessment VARCHAR(50), 
+        overall_confidence FLOAT,
+        error_message TEXT, -- Ошибка от Python-сервиса, если была
+        processing_duration_ms INTEGER
+    );
+    CREATE INDEX idx_detectionhistory_user_id ON DetectionHistory(user_id);
+    CREATE INDEX idx_detectionhistory_status ON DetectionHistory(status);
+    CREATE INDEX idx_detectionhistory_request_id ON DetectionHistory(request_id);
+    -- Если overall_assessment будет вычисляться и сохраняться Go-сервисом, можно добавить индекс:
+    -- CREATE INDEX idx_detectionhistory_overall_assessment ON DetectionHistory(overall_assessment);
+    ```
+* **Как хранить аудиофайлы:** (без изменений)
+
+**2.5. Redis** (без изменений)
+
+---
+
+**3. Отказоустойчивость и Надежность** (без существенных изменений, логика возврата ошибок в `error_message` сохраняется)
+
+* ...
+* **Обработка ошибок на каждом этапе:**
+    * ...
+    * **Python gRPC:** Логирование. Возврат информации об ошибке в `AudioDetectionResponse.error_message`.
+    * ...
+
+---
+
+**4. Масштабируемость** (без изменений)
+
+---
+
+**5. Безопасность** (без изменений)
+
+---
+
+**6. Мониторинг (Prometheus & Grafana)** (метрики для `overall_assessment` на стороне Python больше не актуальны, но общие метрики производительности остаются)
+
+* **Ключевые метрики:**
+    * **Python gRPC Service:**
+        * ...
+        * Латентность обработки `ProcessAudio` (общая и по стадиям: предобработка, инференс, **сбор `score`**).
+        * ...
+* ...
+
+---
+
+**7. Возможные узкие места и пути их решения** (без изменений)
+
+---
+
+**8. Формат аудио: Конвертация** (без изменений)
+
+---
+
+Эта архитектура представляет собой надежную и масштабируемую основу для вашего сервиса. Важно помнить, что любая архитектура — это живой организм, который будет развиваться и адаптироваться по мере роста сервиса и появления новых требований. Регулярный мониторинг и анализ производительности помогут вовремя выявлять узкие места и оптимизировать систему.
+
+**Основные изменения отражены в:**
+* Описании ролей компонентов (особенно Frontend и Python Service).
+* Структуре `.proto` файла (`ChunkPrediction` и `AudioDetectionResponse`).
+* Sequence diagram (данные, передаваемые между Python, Go и Frontend).
+* Описании поля `results` и полей `overall_assessment`/`overall_confidence` в таблице `DetectionHistory`.
+
+Теперь Python-сервис четко отвечает за ML-часть (предоставление `score` по чанкам), а Frontend — за пользовательскую интерпретацию этих данных. Go-сервис выступает как связующее звено и хранилище.

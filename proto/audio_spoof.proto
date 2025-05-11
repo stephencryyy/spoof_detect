@@ -1,27 +1,25 @@
-syntax = "proto3";
+    syntax = "proto3";
 
-package audio_spoof;
+    package audio_spoof; // Оставляем ваш пакет для совместимости импортов
 
-// Сервис для детекции аудио дипфейков
-service AudioSpoofDetector {
-  // Метод для предсказания по одному аудио-чанку
-  // Принимает сырые аудиоданные (ожидается PCM float32, моно, 16000 Гц)
-  // Возвращает логит предсказания
-  rpc PredictChunk(PredictRequest) returns (PredictResponse);
-}
+    service AudioDetection { // Сервис как в README и новом grpc_server.py
+      rpc ProcessAudio (AudioDataRequest) returns (AudioDetectionResponse);
+    }
 
-// Запрос на предсказание
-message PredictRequest {
-  // Сырые аудиоданные чанка в виде байтов.
-  // Предполагается, что это массив float32, соответствующий
-  // ожидаемому SAMPLE_RATE (16000) и NUM_SAMPLES (64000)
-  // после десериализации. Клиент (Go/Python-worker) отвечает за
-  // правильную нарезку и формат данных перед отправкой.
-  bytes audio_chunk_data = 1;
-}
+    message AudioDataRequest {
+      string request_id = 1;
+      string minio_object_key = 2; // Ключ объекта (путь к файлу) в MinIO
+      string original_filename = 3; // Для информации и возможного выбора кодека
+    }
 
-// Ответ с предсказанием
-message PredictResponse {
-  // Предсказанный логит. Положительное значение -> Spoof.
-  float logit = 1;
-}
+    message ChunkPrediction { // <- Вот недостающее сообщение
+      // Оценка вероятности того, что чанк является дипфейком (0.0 до 1.0).
+      // 0.0 означает "очень вероятно настоящий", 1.0 - "очень вероятно фейк".
+      float score = 1;
+    }
+
+    message AudioDetectionResponse { // <- Вот недостающее сообщение
+      string request_id = 1;
+      map<string, ChunkPrediction> chunk_predictions = 2; // e.g., "chunk_0", "chunk_1"
+      string error_message = 3; // Если была ошибка в Python сервисе
+    }

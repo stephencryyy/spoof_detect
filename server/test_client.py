@@ -9,7 +9,7 @@ SERVER_ADDRESS = 'localhost:50052'
 
 # ЗАМЕНИТЕ ЭТИ ЗНАЧЕНИЯ на реальные для вашего тестового MinIO
 TEST_MINIO_BUCKET_NAME = "your-audio-bucket"  # <--- ИЗМЕНЕНО: Имя бакета
-TEST_MINIO_OBJECT_KEY = '143559d7-cccb-4fbd-9d81-378ccb230225/1746978453204463837/байдену_сложно_сформулировать_свои_мысли.mp3' # <--- ИЗМЕНЕНО: Ключ объекта в MinIO
+TEST_MINIO_OBJECT_KEY = '143559d7-cccb-4fbd-9d81-378ccb230225/1746979926071220915/fake2.mp3' # <--- ИЗМЕНЕНО: Ключ объекта в MinIO
                                                 # Убедитесь, что этот файл существует в указанном бакете
 
 def run_client(bucket_name: str, object_key: str):

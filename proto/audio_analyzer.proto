@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package audioanalyzer; // Изменяем пакет, как в вашем примере
+
+// Сервис для анализа аудио
+service AudioAnalysis {
+  // Метод для обработки аудиофайла из MinIO
+  rpc AnalyzeAudio (AnalyzeAudioRequest) returns (AnalyzeAudioResponse);
+}
+
+// Запрос на анализ аудио
+message AnalyzeAudioRequest {
+  string minio_bucket_name = 1; // Название бакета в MinIO
+  string minio_object_key = 2;  // Ключ (путь) к файлу в MinIO
+  // string task_id = 3; // Опционально: ID задачи, если Go хочет его передать для логирования
+  // Оставим task_id закомментированным, его можно будет добавить позже при необходимости
+}
+
+// Ответ с результатами анализа
+message AnalyzeAudioResponse {
+  map<string, float> predictions = 1; // Карта с предсказаниями (ключ - идентификатор чанка, значение - предсказание)
+  string error_message = 2;         // Сообщение об ошибке, если что-то пошло не так
+}

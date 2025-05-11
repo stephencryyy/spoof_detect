@@ -9,11 +9,12 @@ import torchaudio # Для обработки аудио
 import redis # Для взаимодействия с Redis
 from minio import Minio # <--- Добавлен импорт MinIO
 from minio.error import S3Error # <--- Для обработки ошибок MinIO
-from typing import Dict, Tuple # Для type hinting
+from typing import Dict, Tuple, Optional # Добавил Optional
+import uuid # Для генерации request_id, если он не приходит
 
 # Импорт сгенерированного кода
-import audio_spoof_pb2
-import audio_spoof_pb2_grpc
+import audio_analyzer_pb2
+import audio_analyzer_pb2_grpc
 
 # Импорт компонентов из inference.py
 from inference import (
@@ -38,15 +39,15 @@ REDIS_CHUNK_EXPIRY_SECONDS = 3600 # 1 час
 MINIO_ENDPOINT = os.getenv('MINIO_ENDPOINT', 'localhost:9000')
 MINIO_ACCESS_KEY = os.getenv('MINIO_ACCESS_KEY', 'minioadmin') # Пример
 MINIO_SECRET_KEY = os.getenv('MINIO_SECRET_KEY', 'minioadmin') # Пример
-MINIO_BUCKET_NAME = os.getenv('MINIO_BUCKET_NAME', 'audio-files') # Пример
 MINIO_SECURE = os.getenv('MINIO_SECURE', 'False').lower() == 'true'
+MINIO_BUCKET_NAME = os.getenv('MINIO_BUCKET_NAME', 'your-audio-bucket')
 
 
 # Используем имя сервиса и сообщения из README.md
 # Если ваши сгенерированные файлы используют другие имена, их нужно будет поправить
 # Например, AudioDetectionServicer вместо AudioSpoofDetectorServicer
-class AudioDetectionServicer(audio_spoof_pb2_grpc.AudioDetectionServicer): # ИЗМЕНЕНО: базовый класс
-    """Реализация gRPC сервиса для детекции дипфейков."""
+class AudioAnalysisServicer(audio_analyzer_pb2_grpc.AudioAnalysisServicer): # ИЗМЕНЕНО: базовый класс
+    """Реализация gRPC сервиса для анализа аудио дипфейков."""
 
     def __init__(self):
         super().__init__()
@@ -67,16 +68,14 @@ class AudioDetectionServicer(audio_spoof_pb2_grpc.AudioDetectionServicer): # И�
         print(f"Подключение к Redis: {REDIS_HOST}:{REDIS_PORT}")
         try:
             self.redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
-            self.redis_client.ping() # Проверка соединения
+            self.redis_client.ping()
             print("Успешно подключено к Redis.")
         except redis.exceptions.ConnectionError as e:
             print(f"Ошибка подключения к Redis: {e}")
-            # В зависимости от политики, сервер может не стартовать или работать в деградированном режиме
-            # Для данного примера, сервер продолжит работу, но ProcessAudio будет возвращать ошибку
-            self.redis_client = None # Явно указываем, что клиент не доступен
+            self.redis_client = None # Сервис может продолжить работу, но AnalyzeAudio вернет ошибку
 
-        # Инициализация клиента MinIO
-        print(f"Подключение к MinIO: {MINIO_ENDPOINT}, bucket: {MINIO_BUCKET_NAME}, secure: {MINIO_SECURE}")
+        # Инициализация клиента MinIO (без проверки бакета по умолчанию здесь)
+        print(f"Инициализация клиента MinIO для эндпоинта: {MINIO_ENDPOINT}, secure: {MINIO_SECURE}")
         try:
             self.minio_client = Minio(
                 MINIO_ENDPOINT,
@@ -84,16 +83,6 @@ class AudioDetectionServicer(audio_spoof_pb2_grpc.AudioDetectionServicer): # И�
                 secret_key=MINIO_SECRET_KEY,
                 secure=MINIO_SECURE
             )
-            # Проверка существования бакета (опционально, но полезно)
-            found = self.minio_client.bucket_exists(MINIO_BUCKET_NAME)
-            if not found:
-                print(f"Ошибка: Бакет MinIO '{MINIO_BUCKET_NAME}' не найден!")
-                # В зависимости от политики, сервер может не стартовать
-                # или ProcessAudio будет всегда возвращать ошибку, если бакет не найден.
-                # Здесь мы просто выводим сообщение, но не прерываем запуск.
-                # self.minio_client = None # Можно раскомментировать, если это критично для старта
-            else:
-                print(f"Успешно подключено к MinIO и бакет '{MINIO_BUCKET_NAME}' найден.")
         except Exception as e:
             print(f"Критическая ошибка при инициализации клиента MinIO: {e}")
             # Это критично, без MinIO сервис не сможет работать по новой схеме
@@ -110,12 +99,12 @@ class AudioDetectionServicer(audio_spoof_pb2_grpc.AudioDetectionServicer): # И�
         score = torch.sigmoid(logit).item()
         return score
 
-    def _process_chunk_from_redis(self, request_id: str, chunk_idx: int) -> Tuple[str, audio_spoof_pb2.ChunkPrediction | None, str | None]:
+    def _process_chunk_from_redis(self, request_id_for_redis: str, chunk_idx: int) -> Tuple[str, Optional[float], Optional[str]]:
         """
         Загружает чанк из Redis, выполняет предсказание и возвращает результат.
-        Возвращает (chunk_id_str, ChunkPrediction, error_message)
+        Возвращает (chunk_id_str, score, error_message)
         """
-        chunk_key = f"{request_id}:chunk_{chunk_idx}"
+        chunk_key = f"{request_id_for_redis}:chunk_{chunk_idx}"
         chunk_id_str = f"chunk_{chunk_idx}"
         try:
             chunk_data_bytes = self.redis_client.get(chunk_key)
@@ -135,7 +124,7 @@ class AudioDetectionServicer(audio_spoof_pb2_grpc.AudioDetectionServicer): # И�
             
             score = self._predict_score_for_chunk_tensor(input_tensor)
             # print(f"Предсказание для {chunk_key}: score={score:.4f}")
-            return chunk_id_str, audio_spoof_pb2.ChunkPrediction(score=score), None
+            return chunk_id_str, score, None
 
         except Exception as e:
             error_msg = f"Ошибка обработки чанка {chunk_key}: {e}"
@@ -144,62 +133,85 @@ class AudioDetectionServicer(audio_spoof_pb2_grpc.AudioDetectionServicer): # И�
 
 
     # Это новый основной метод согласно README.md
-    def ProcessAudio(self, request: audio_spoof_pb2.AudioDataRequest, context) -> audio_spoof_pb2.AudioDetectionResponse:
+    def AnalyzeAudio(self, request: audio_analyzer_pb2.AnalyzeAudioRequest, context) -> audio_analyzer_pb2.AnalyzeAudioResponse:
         """
         Обрабатывает полный аудиофайл: скачивает из MinIO, нарезает на чанки, 
         сохраняет в Redis, параллельно обрабатывает чанки и возвращает агрегированный результат.
         """
-        # Изменено: получаем minio_object_key вместо audio_content
-        print(f"Получен запрос ProcessAudio. request_id: {request.request_id}, filename: {request.original_filename}, minio_key: {request.minio_object_key}")
+        # Генерируем внутренний ID для использования с Redis, т.к. request_id не приходит
+        # В будущем здесь можно использовать request.task_id, если он будет добавлен
+        internal_request_id_for_redis = str(uuid.uuid4())
+
+        print(f"Получен запрос AnalyzeAudio. Bucket: '{request.minio_bucket_name}', Key: '{request.minio_object_key}'. Internal Redis ID: {internal_request_id_for_redis}")
 
         if self.redis_client is None:
             error_msg = "Ошибка сервера: Redis недоступен."
             print(error_msg)
             context.set_code(grpc.StatusCode.UNAVAILABLE)
             context.set_details(error_msg)
-            return audio_spoof_pb2.AudioDetectionResponse(request_id=request.request_id, error_message=error_msg)
+            # ИЗМЕНЕНО: возвращаем AnalyzeAudioResponse
+            return audio_analyzer_pb2.AnalyzeAudioResponse(error_message=error_msg)
 
-        request_id = request.request_id
-        chunk_predictions_map: Dict[str, audio_spoof_pb2.ChunkPrediction] = {}
-        overall_error_message = [] # Собираем все ошибки обработки чанков
+        if not self.minio_client: # Проверка на случай, если minio_client не был инициализирован
+            error_msg = "Ошибка сервера: MinIO клиент не инициализирован."
+            print(error_msg)
+            context.set_code(grpc.StatusCode.FAILED_PRECONDITION)
+            context.set_details(error_msg)
+            return audio_analyzer_pb2.AnalyzeAudioResponse(error_message=error_msg)
+
+        # ИЗМЕНЕНО: тип predictions_map
+        predictions_map: Dict[str, float] = {}
+        overall_error_message_parts = []
 
         try:
             # 1. Скачивание аудиофайла из MinIO
             audio_content_bytes = None
-            if not request.minio_object_key:
-                error_msg = "Ошибка запроса: minio_object_key не указан."
+            if not request.minio_bucket_name or not request.minio_object_key:
+                error_msg = "Ошибка запроса: minio_bucket_name или minio_object_key не указаны."
                 print(error_msg)
                 context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
                 context.set_details(error_msg)
-                return audio_spoof_pb2.AudioDetectionResponse(request_id=request.request_id, error_message=error_msg)
+                return audio_analyzer_pb2.AnalyzeAudioResponse(error_message=error_msg)
             
             try:
-                print(f"Загрузка файла из MinIO: bucket='{MINIO_BUCKET_NAME}', key='{request.minio_object_key}'")
-                response_minio = self.minio_client.get_object(MINIO_BUCKET_NAME, request.minio_object_key)
+                print(f"Загрузка файла из MinIO: bucket='{request.minio_bucket_name}', key='{request.minio_object_key}'")
+                # Проверка существования бакета перед чтением объекта
+                if not self.minio_client.bucket_exists(request.minio_bucket_name):
+                    error_msg = f"Ошибка MinIO: Бакет '{request.minio_bucket_name}' не найден."
+                    print(error_msg)
+                    context.set_code(grpc.StatusCode.NOT_FOUND)
+                    context.set_details(error_msg)
+                    return audio_analyzer_pb2.AnalyzeAudioResponse(error_message=error_msg)
+                
+                response_minio = self.minio_client.get_object(request.minio_bucket_name, request.minio_object_key)
                 audio_content_bytes = response_minio.read()
             except S3Error as s3_err:
-                error_msg = f"Ошибка MinIO при скачивании файла '{request.minio_object_key}': {s3_err}"
+                error_msg = f"Ошибка MinIO при скачивании файла '{request.minio_object_key}' из бакета '{request.minio_bucket_name}': {s3_err}"
                 print(error_msg)
-                context.set_code(grpc.StatusCode.NOT_FOUND) # Или другой подходящий код
+                # Определяем более конкретный gRPC код ошибки на основе S3 ошибки
+                if s3_err.code == "NoSuchKey" or s3_err.code == "NoSuchBucket":
+                    context.set_code(grpc.StatusCode.NOT_FOUND)
+                else:
+                    context.set_code(grpc.StatusCode.INTERNAL) # Общая ошибка MinIO
                 context.set_details(error_msg)
-                return audio_spoof_pb2.AudioDetectionResponse(request_id=request.request_id, error_message=error_msg)
+                return audio_analyzer_pb2.AnalyzeAudioResponse(error_message=error_msg)
             except Exception as e:
                 error_msg = f"Неожиданная ошибка при скачивании файла из MinIO '{request.minio_object_key}': {e}"
                 print(error_msg)
                 context.set_code(grpc.StatusCode.INTERNAL)
                 context.set_details(error_msg)
-                return audio_spoof_pb2.AudioDetectionResponse(request_id=request.request_id, error_message=error_msg)
+                return audio_analyzer_pb2.AnalyzeAudioResponse(error_message=error_msg)
             finally:
                 if 'response_minio' in locals() and response_minio:
                     response_minio.close()
                     response_minio.release_conn()
             
             if not audio_content_bytes:
-                error_msg = f"Файл '{request.minio_object_key}' из MinIO пуст или не удалось прочитать."
+                error_msg = f"Файл '{request.minio_object_key}' из MinIO (бакет '{request.minio_bucket_name}') пуст или не удалось прочитать."
                 print(error_msg)
-                context.set_code(grpc.StatusCode.INTERNAL) # Или NOT_FOUND
+                context.set_code(grpc.StatusCode.INTERNAL)
                 context.set_details(error_msg)
-                return audio_spoof_pb2.AudioDetectionResponse(request_id=request.request_id, error_message=error_msg)
+                return audio_analyzer_pb2.AnalyzeAudioResponse(error_message=error_msg)
 
             print(f"Файл из MinIO успешно загружен, размер: {len(audio_content_bytes)} байт.")
 
@@ -212,7 +224,7 @@ class AudioDetectionServicer(audio_spoof_pb2_grpc.AudioDetectionServicer): # И�
                 print(error_msg)
                 context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
                 context.set_details(error_msg)
-                return audio_spoof_pb2.AudioDetectionResponse(request_id=request_id, error_message=error_msg)
+                return audio_analyzer_pb2.AnalyzeAudioResponse(error_message=error_msg)
 
             # 1.1 Ресемплинг
             if sr != SAMPLE_RATE:
@@ -235,7 +247,7 @@ class AudioDetectionServicer(audio_spoof_pb2_grpc.AudioDetectionServicer): # И�
                 print(error_msg)
                 context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
                 context.set_details(error_msg)
-                return audio_spoof_pb2.AudioDetectionResponse(request_id=request_id, error_message=error_msg)
+                return audio_analyzer_pb2.AnalyzeAudioResponse(error_message=error_msg)
 
 
             print(f"Аудиофайл предобработан. Всего семплов: {total_samples}, будет чанков: {num_chunks}")
@@ -255,22 +267,23 @@ class AudioDetectionServicer(audio_spoof_pb2_grpc.AudioDetectionServicer): # И�
                 
                 # Конвертация тензора чанка в байты (float32)
                 chunk_bytes_for_redis = current_chunk_tensor.numpy().astype(np.float32).tobytes()
-                chunk_key = f"{request_id}:chunk_{i}"
+                # Используем internal_request_id_for_redis для ключей Redis
+                chunk_key = f"{internal_request_id_for_redis}:chunk_{i}"
                 
                 try:
                     self.redis_client.set(chunk_key, chunk_bytes_for_redis, ex=REDIS_CHUNK_EXPIRY_SECONDS)
                     chunk_indices_to_process.append(i)
                 except redis.exceptions.RedisError as e:
-                    err_msg = f"Ошибка сохранения чанка {chunk_key} в Redis: {e}"
-                    print(err_msg)
-                    overall_error_message.append(err_msg)
+                    err_msg_part = f"Ошибка сохранения чанка {chunk_key} в Redis: {e}"
+                    print(err_msg_part)
+                    overall_error_message_parts.append(err_msg_part)
                     # Если не удалось сохранить чанк, его не нужно добавлять в обработку
             
             if not chunk_indices_to_process and num_chunks > 0 : # Если были чанки, но ни один не сохранился
-                 error_msg_final = "; ".join(overall_error_message) if overall_error_message else "Failed to store any chunks in Redis."
+                 error_msg_final = "; ".join(overall_error_message_parts) if overall_error_message_parts else "Failed to store any chunks in Redis."
                  context.set_code(grpc.StatusCode.INTERNAL)
                  context.set_details(error_msg_final)
-                 return audio_spoof_pb2.AudioDetectionResponse(request_id=request_id, error_message=error_msg_final)
+                 return audio_analyzer_pb2.AnalyzeAudioResponse(error_message=error_msg_final)
 
 
             # 3. Параллельная обработка чанков из Redis
@@ -281,18 +294,18 @@ class AudioDetectionServicer(audio_spoof_pb2_grpc.AudioDetectionServicer): # И�
             with futures.ThreadPoolExecutor(max_workers=min(10, num_chunks if num_chunks > 0 else 1)) as executor:
                 # Future -> (request_id, chunk_idx)
                 future_to_task_params = {
-                    executor.submit(self._process_chunk_from_redis, request_id, idx): (request_id, idx)
+                    executor.submit(self._process_chunk_from_redis, internal_request_id_for_redis, idx): (internal_request_id_for_redis, idx)
                     for idx in chunk_indices_to_process
                 }
 
                 for future in futures.as_completed(future_to_task_params):
                     # req_id_done, chunk_idx_done = future_to_task_params[future]
                     try:
-                        chunk_id_str, chunk_pred, error_msg_chunk = future.result()
+                        chunk_id_str, score_val, error_msg_chunk = future.result()
                         if error_msg_chunk:
-                            overall_error_message.append(f"Error for {chunk_id_str}: {error_msg_chunk}")
-                        if chunk_pred:
-                            chunk_predictions_map[chunk_id_str] = chunk_pred
+                            overall_error_message_parts.append(f"Error for {chunk_id_str}: {error_msg_chunk}")
+                        if score_val is not None:
+                            predictions_map[chunk_id_str] = score_val
                     except Exception as exc:
                         # req_id_err, chunk_idx_err = future_to_task_params[future]
                         # err_msg = f"Ошибка при обработке задачи для чанка {chunk_idx_err} запроса {req_id_err}: {exc}"
@@ -300,9 +313,9 @@ class AudioDetectionServicer(audio_spoof_pb2_grpc.AudioDetectionServicer): # И�
                         # т.к. она более специфична. Если future.result() сам по себе вызвал исключение,
                         # это будет более общая ошибка.
                         params = future_to_task_params[future]
-                        err_msg = f"Непредвиденная ошибка в потоке для чанка {params[1]} запроса {params[0]}: {exc}"
-                        print(err_msg)
-                        overall_error_message.append(err_msg)
+                        err_msg_part = f"Непредвиденная ошибка в потоке для чанка {params[1]} запроса {params[0]}: {exc}"
+                        print(err_msg_part)
+                        overall_error_message_parts.append(err_msg_part)
             
             # 4. Опциональная очистка чанков из Redis
             # if chunk_indices_to_process: # Только если что-то было добавлено
@@ -313,31 +326,30 @@ class AudioDetectionServicer(audio_spoof_pb2_grpc.AudioDetectionServicer): # И�
             #         print(f"Ошибка удаления чанков из Redis для {request_id}: {e}")
             #         # Не критично для ответа клиенту, но стоит залогировать
 
-            final_error_message_str = "; ".join(overall_error_message) if overall_error_message else ""
+            final_error_message_str = "; ".join(overall_error_message_parts) if overall_error_message_parts else ""
             
-            if not chunk_predictions_map and num_chunks > 0 and not final_error_message_str:
+            if not predictions_map and num_chunks > 0 and not final_error_message_str:
                  final_error_message_str = "No chunk predictions could be made, though chunks were processed without explicit errors."
-            elif not chunk_predictions_map and num_chunks > 0 and final_error_message_str:
+            elif not predictions_map and num_chunks > 0 and final_error_message_str:
                  # Ошибки уже есть, ничего не добавляем
                  pass
 
 
-            print(f"Обработка ProcessAudio для {request_id} завершена. Предсказаний: {len(chunk_predictions_map)}. Ошибки: '{final_error_message_str}'")
-            return audio_spoof_pb2.AudioDetectionResponse(
-                request_id=request_id,
-                chunk_predictions=chunk_predictions_map,
+            print(f"Обработка AnalyzeAudio для MinIO '{request.minio_bucket_name}/{request.minio_object_key}' завершена. Предсказаний: {len(predictions_map)}. Ошибки: '{final_error_message_str}'")
+            return audio_analyzer_pb2.AnalyzeAudioResponse(
+                predictions=predictions_map,
                 error_message=final_error_message_str
             )
 
         except Exception as e:
             # Глобальный обработчик ошибок для ProcessAudio
-            error_msg = f"Критическая ошибка в ProcessAudio для request_id {request.request_id}: {e}"
+            error_msg = f"Критическая ошибка в AnalyzeAudio для MinIO '{request.minio_bucket_name}/{request.minio_object_key}': {e}"
             print(error_msg)
             import traceback
             traceback.print_exc() # Для детального дебага в логах сервера
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details(error_msg)
-            return audio_spoof_pb2.AudioDetectionResponse(request_id=request.request_id, error_message=error_msg)
+            return audio_analyzer_pb2.AnalyzeAudioResponse(error_message=error_msg)
 
     # Старый метод PredictChunk больше не нужен в таком виде, так как его логика
     # инкапсулирована в _predict_score_for_chunk_tensor и _process_chunk_from_redis.
@@ -354,16 +366,16 @@ def serve():
 
     # Создаем экземпляр нашего сервиса (модель загрузится в __init__)
     try:
-        servicer = AudioDetectionServicer() # Используем новое имя класса
+        servicer = AudioAnalysisServicer() # Используем новое имя класса
     except RuntimeError as e:
         print(f"Критическая ошибка при инициализации сервиса: {e}")
         return 
 
     # Убедитесь, что эта функция соответствует вашему xxx_pb2_grpc.py
     # Например, add_AudioDetectionServicer_to_server
-    audio_spoof_pb2_grpc.add_AudioDetectionServicer_to_server(servicer, server) # ИЗМЕНЕНО: функция добавления
+    audio_analyzer_pb2_grpc.add_AudioAnalysisServicer_to_server(servicer, server) # ИЗМЕНЕНО: функция добавления
 
-    print(f"Запуск gRPC сервера на {_SERVER_ADDRESS}...")
+    print(f"Запуск gRPC сервера AudioAnalysis на {_SERVER_ADDRESS}...")
     server.add_insecure_port(_SERVER_ADDRESS)
     server.start()
     print("Сервер запущен. Нажмите Ctrl+C для остановки.")

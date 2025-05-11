@@ -1,55 +1,53 @@
 # test_client.py
 import grpc
-import audio_spoof_pb2  # Убедитесь, что этот файл доступен
-import audio_spoof_pb2_grpc  # Убедитесь, что этот файл доступен
-import uuid
-import os # Для извлечения имени файла из ключа
+import audio_analyzer_pb2
+import audio_analyzer_pb2_grpc
+import os # Для извлечения имени файла из ключа (если понадобится для original_filename)
 
 # --- Настройки клиента ---
 SERVER_ADDRESS = 'localhost:50052'
-# ЗАМЕНИТЕ ЭТО на реальный ключ объекта (путь к файлу) в вашем MinIO бакете,
-# который вы будете использовать для теста.
-# Например, если файл в бакете называется "test_samples/sample1.wav"
-TEST_MINIO_OBJECT_KEY = "test_audio_files/eng.mp3" # <--- ИЗМЕНЕНО: теперь это ключ в MinIO
 
-def run_client(minio_key: str):
-    """Отправляет запрос с ключом объекта MinIO на gRPC сервер и печатает ответ."""
-    # Убрано чтение файла с диска, т.к. файл должен быть в MinIO
+# ЗАМЕНИТЕ ЭТИ ЗНАЧЕНИЯ на реальные для вашего тестового MinIO
+TEST_MINIO_BUCKET_NAME = "your-audio-bucket"  # <--- ИЗМЕНЕНО: Имя бакета
+TEST_MINIO_OBJECT_KEY = '143559d7-cccb-4fbd-9d81-378ccb230225/1746978453204463837/байдену_сложно_сформулировать_свои_мысли.mp3' # <--- ИЗМЕНЕНО: Ключ объекта в MinIO
+                                                # Убедитесь, что этот файл существует в указанном бакете
+
+def run_client(bucket_name: str, object_key: str):
+    """Отправляет запрос с информацией о файле в MinIO на gRPC сервер и печатает ответ."""
     
     try:
         with grpc.insecure_channel(SERVER_ADDRESS) as channel:
-            stub = audio_spoof_pb2_grpc.AudioDetectionStub(channel)
+            # ИЗМЕНЕНО: используем AudioAnalysisStub
+            stub = audio_analyzer_pb2_grpc.AudioAnalysisStub(channel)
 
-            request_id = str(uuid.uuid4())
-            # В качестве original_filename можно использовать имя файла из ключа MinIO
-            original_filename = os.path.basename(minio_key) 
+            print(f"Отправка запроса AnalyzeAudio...")
+            print(f"  minio_bucket_name: {bucket_name}")
+            print(f"  minio_object_key: {object_key}")
 
-            print(f"Отправка запроса ProcessAudio...")
-            print(f"  request_id: {request_id}")
-            print(f"  original_filename: {original_filename}")
-            print(f"  minio_object_key: {minio_key}") # <--- ИЗМЕНЕНО: передаем ключ MinIO
-
-            # Формируем запрос согласно AudioDataRequest из .proto
-            grpc_request = audio_spoof_pb2.AudioDataRequest(
-                request_id=request_id,
-                minio_object_key=minio_key, # <--- ИЗМЕНЕНО: используем minio_object_key
-                original_filename=original_filename
+            # Формируем запрос согласно AnalyzeAudioRequest из .proto
+            # original_filename и request_id больше не являются частью запроса к Python-сервису
+            # task_id был опциональным и пока закомментирован в .proto
+            grpc_request = audio_analyzer_pb2.AnalyzeAudioRequest(
+                minio_bucket_name=bucket_name,
+                minio_object_key=object_key
             )
 
-            # Вызываем удаленный метод ProcessAudio
-            response = stub.ProcessAudio(grpc_request, timeout=300) # Таймаут 5 минут
+            # Вызываем удаленный метод AnalyzeAudio
+            response = stub.AnalyzeAudio(grpc_request, timeout=300) # Таймаут 5 минут
 
             print("\n--- Ответ от сервера ---")
-            print(f"Request ID: {response.request_id}")
+            # request_id больше не приходит в ответе
             if response.error_message:
                 print(f"Сообщение об ошибке: {response.error_message}")
             
-            if response.chunk_predictions:
+            # ИЗМЕНЕНО: поле predictions теперь map<string, float>
+            if response.predictions:
                 print("Предсказания по чанкам:")
-                for chunk_id, prediction in sorted(response.chunk_predictions.items()):
-                    print(f"  {chunk_id}: score = {prediction.score:.4f}")
+                # Сортируем по ключу (chunk_id) для консистентного вывода
+                for chunk_id, score_value in sorted(response.predictions.items()): 
+                    print(f"  {chunk_id}: score = {score_value:.4f}")
             else:
-                print("Предсказания по чанкам отсутствуют.")
+                print("Предсказания по чанкам отсутствуют (или была ошибка).")
 
     except grpc.RpcError as e:
         print(f"gRPC ошибка во время вызова: {e.code()} ({e.code().name}) - {e.details()}")
@@ -57,11 +55,15 @@ def run_client(minio_key: str):
         print(f"Произошла неожиданная ошибка: {e}")
 
 if __name__ == '__main__':
-    if TEST_MINIO_OBJECT_KEY == "ЗАМЕНИТЕ_НА_ВАШ_КЛЮЧ_В_MINIO/test_audio.wav": # Пример условия
-        print("Пожалуйста, отредактируйте TEST_MINIO_OBJECT_KEY в скрипте test_client.py, "
-              "указав реальный ключ объекта (путь к файлу) в вашем MinIO бакете.")
-    else:
-        print(f"Клиент будет использовать ключ объекта MinIO: {TEST_MINIO_OBJECT_KEY}")
-        print("Убедитесь, что файл по этому ключу существует в вашем MinIO бакете "
-              "и что gRPC сервер настроен для доступа к этому MinIO.")
-        run_client(TEST_MINIO_OBJECT_KEY)
+    # Простое условие для напоминания о настройке
+    if TEST_MINIO_BUCKET_NAME == "your-audio-bucket" and TEST_MINIO_OBJECT_KEY == "test_samples/sample.wav":
+        print(f"Клиент использует тестовые значения по умолчанию: ")
+        print(f"  Бакет: {TEST_MINIO_BUCKET_NAME}")
+        print(f"  Ключ объекта: {TEST_MINIO_OBJECT_KEY}")
+        print("Пожалуйста, убедитесь, что эти значения корректны для вашего тестового MinIO, "
+              "или измените их в скрипте test_client.py.")
+        print("Файл по указанному ключу должен существовать в бакете.")
+    
+    print(f"Клиент будет использовать бакет: '{TEST_MINIO_BUCKET_NAME}' и ключ: '{TEST_MINIO_OBJECT_KEY}'")
+    print("Убедитесь, что gRPC сервер (server/grpc_server.py) запущен и настроен для доступа к этому MinIO.")
+    run_client(TEST_MINIO_BUCKET_NAME, TEST_MINIO_OBJECT_KEY)

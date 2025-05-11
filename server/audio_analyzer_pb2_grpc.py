@@ -3,7 +3,7 @@
 import grpc
 import warnings
 
-import audio_spoof_pb2 as audio__spoof__pb2
+import audio_analyzer_pb2 as audio__analyzer__pb2
 
 GRPC_GENERATED_VERSION = '1.71.0'
 GRPC_VERSION = grpc.__version__
@@ -18,15 +18,15 @@ except ImportError:
 if _version_not_supported:
     raise RuntimeError(
         f'The grpc package installed is at version {GRPC_VERSION},'
-        + f' but the generated code in audio_spoof_pb2_grpc.py depends on'
+        + f' but the generated code in audio_analyzer_pb2_grpc.py depends on'
         + f' grpcio>={GRPC_GENERATED_VERSION}.'
         + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
         + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
     )
 
 
-class AudioDetectionStub(object):
-    """Сервис как в README и новом grpc_server.py
+class AudioAnalysisStub(object):
+    """Сервис для анализа аудио
     """
 
     def __init__(self, channel):
@@ -35,45 +35,46 @@ class AudioDetectionStub(object):
         Args:
             channel: A grpc.Channel.
         """
-        self.ProcessAudio = channel.unary_unary(
-                '/audio_spoof.AudioDetection/ProcessAudio',
-                request_serializer=audio__spoof__pb2.AudioDataRequest.SerializeToString,
-                response_deserializer=audio__spoof__pb2.AudioDetectionResponse.FromString,
+        self.AnalyzeAudio = channel.unary_unary(
+                '/audioanalyzer.AudioAnalysis/AnalyzeAudio',
+                request_serializer=audio__analyzer__pb2.AnalyzeAudioRequest.SerializeToString,
+                response_deserializer=audio__analyzer__pb2.AnalyzeAudioResponse.FromString,
                 _registered_method=True)
 
 
-class AudioDetectionServicer(object):
-    """Сервис как в README и новом grpc_server.py
+class AudioAnalysisServicer(object):
+    """Сервис для анализа аудио
     """
 
-    def ProcessAudio(self, request, context):
-        """Missing associated documentation comment in .proto file."""
+    def AnalyzeAudio(self, request, context):
+        """Метод для обработки аудиофайла из MinIO
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
 
-def add_AudioDetectionServicer_to_server(servicer, server):
+def add_AudioAnalysisServicer_to_server(servicer, server):
     rpc_method_handlers = {
-            'ProcessAudio': grpc.unary_unary_rpc_method_handler(
-                    servicer.ProcessAudio,
-                    request_deserializer=audio__spoof__pb2.AudioDataRequest.FromString,
-                    response_serializer=audio__spoof__pb2.AudioDetectionResponse.SerializeToString,
+            'AnalyzeAudio': grpc.unary_unary_rpc_method_handler(
+                    servicer.AnalyzeAudio,
+                    request_deserializer=audio__analyzer__pb2.AnalyzeAudioRequest.FromString,
+                    response_serializer=audio__analyzer__pb2.AnalyzeAudioResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-            'audio_spoof.AudioDetection', rpc_method_handlers)
+            'audioanalyzer.AudioAnalysis', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers('audio_spoof.AudioDetection', rpc_method_handlers)
+    server.add_registered_method_handlers('audioanalyzer.AudioAnalysis', rpc_method_handlers)
 
 
  # This class is part of an EXPERIMENTAL API.
-class AudioDetection(object):
-    """Сервис как в README и новом grpc_server.py
+class AudioAnalysis(object):
+    """Сервис для анализа аудио
     """
 
     @staticmethod
-    def ProcessAudio(request,
+    def AnalyzeAudio(request,
             target,
             options=(),
             channel_credentials=None,
@@ -86,9 +87,9 @@ class AudioDetection(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/audio_spoof.AudioDetection/ProcessAudio',
-            audio__spoof__pb2.AudioDataRequest.SerializeToString,
-            audio__spoof__pb2.AudioDetectionResponse.FromString,
+            '/audioanalyzer.AudioAnalysis/AnalyzeAudio',
+            audio__analyzer__pb2.AnalyzeAudioRequest.SerializeToString,
+            audio__analyzer__pb2.AnalyzeAudioResponse.FromString,
             options,
             channel_credentials,
             insecure,

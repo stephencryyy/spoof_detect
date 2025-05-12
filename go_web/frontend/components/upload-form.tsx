@@ -5,13 +5,20 @@ import { useState, useEffect, useRef } from "react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { ResultDisplay } from "@/components/result-display"
 import { Upload, AlertCircle, Loader2, Music } from "lucide-react"
-import { AudioWaveform, type SuspiciousSection } from "@/components/audio-waveform"
+import { AudioWaveform } from "@/components/audio-waveform"
 import { AnalysisSummary } from "@/components/analysis-summary"
 import { AudioPlayer } from "@/components/audio-player"
-import { createRoot } from "react-dom/client"
 import { uploadAudio } from "../lib/api"
+import type { AnalysisResultItem, UploadAudioResponse } from "../lib/types"
+
+// Определяем тип SuspiciousSection здесь, так как он используется для состояния в этом компоненте
+export interface SuspiciousSection {
+  sectionNumber: number;
+  startTime: number;
+  endTime: number;
+  probability: number; // 0-100
+}
 
 // Define the history item type
 interface HistoryItem {
@@ -20,25 +27,18 @@ interface HistoryItem {
   fileSize: string
   date: string
   probability: number
+  analysis_results?: AnalysisResultItem[]
 }
 
 export function UploadForm() {
   const [file, setFile] = useState<File | null>(null)
   const [isAnalyzing, setIsAnalyzing] = useState(false)
-  const [analysisMessage, setAnalysisMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [showWaveform, setShowWaveform] = useState(false)
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const [suspiciousSections, setSuspiciousSections] = useState<SuspiciousSection[]>([])
-
-  const summaryRootRef = useRef<ReturnType<typeof createRoot> | null>(null)
-  const sectionsRootRef = useRef<ReturnType<typeof createRoot> | null>(null)
-
-  useEffect(() => {
-    if (audioUrl && (suspiciousSections.length > 0 || analysisMessage)) {
-        renderAnalysisComponents()
-    }
-  }, [file, audioUrl, suspiciousSections, analysisMessage])
+  const [analysisResultsApi, setAnalysisResultsApi] = useState<AnalysisResultItem[] | null>(null)
+  const [uploadResponse, setUploadResponse] = useState<UploadAudioResponse | null>(null)
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0] || null
@@ -46,26 +46,30 @@ export function UploadForm() {
       setError("Пожалуйста, загрузите аудиофайл")
       setFile(null)
       setAudioUrl(null)
+      setAnalysisResultsApi(null)
+      setUploadResponse(null)
       return
     }
 
     setFile(selectedFile)
-    setAnalysisMessage(null)
     setError(null)
     setShowWaveform(false)
     setSuspiciousSections([])
+    setAnalysisResultsApi(null)
+    setUploadResponse(null)
 
     if (selectedFile) {
-      const url = URL.createObjectURL(selectedFile)
-      setAudioUrl(url)
+      const localUrl = URL.createObjectURL(selectedFile)
+      setAudioUrl(localUrl)
+      setShowWaveform(true)
     } else {
       setAudioUrl(null)
+      setShowWaveform(false)
     }
 
-    // Hide analysis results section
-    const analysisResults = document.getElementById("analysis-results")
-    if (analysisResults) {
-      analysisResults.classList.add("hidden")
+    const analysisResultsDiv = document.getElementById("analysis-results")
+    if (analysisResultsDiv) {
+      analysisResultsDiv.classList.add("hidden")
     }
   }
 
@@ -75,82 +79,54 @@ export function UploadForm() {
     const token = localStorage.getItem("jwt_token")
     if (!token) {
       setError("Пожалуйста, войдите в систему, чтобы загрузить файл.")
-      setIsAnalyzing(false)
       return
     }
 
     setIsAnalyzing(true)
     setError(null)
-    setAnalysisMessage(null)
+    setSuspiciousSections([])
+    setAnalysisResultsApi(null)
 
     try {
-      const data = await uploadAudio(file, token)
-      setAnalysisMessage(data.message || "Файл успешно загружен.")
-
-      const analysisResults = document.getElementById("analysis-results")
-      if (analysisResults) {
-        analysisResults.classList.remove("hidden")
+      const data: UploadAudioResponse = await uploadAudio(file, token)
+      setUploadResponse(data)
+      
+      if (data.error) {
+        setError(data.error)
+      } else if (data.analysis_error) {
+        setError(data.analysis_error)
       }
+
       if (data.file_url) {
-        console.log("File uploaded to:", data.file_url)
+        setAudioUrl(data.file_url)
+      }
+
+      if (data.analysis_results && data.analysis_results.length > 0) {
+        setAnalysisResultsApi(data.analysis_results)
+        const newSuspiciousSections: SuspiciousSection[] = data.analysis_results.map((item, index) => ({
+          sectionNumber: index + 1,
+          startTime: item.start_time_seconds,
+          endTime: item.end_time_seconds,
+          probability: parseFloat((item.score * 100).toFixed(2)),
+        }))
+        setSuspiciousSections(newSuspiciousSections)
+        setShowWaveform(true)
+
+        const overallProbability = newSuspiciousSections.reduce((acc, s) => acc + s.probability, 0) / (newSuspiciousSections.length || 1)
+        saveToHistory(file, overallProbability, data.analysis_results)
+      }
+
+      const analysisResultsDiv = document.getElementById("analysis-results")
+      if (analysisResultsDiv) {
+        analysisResultsDiv.classList.remove("hidden")
       }
 
     } catch (err) {
-      setError(err instanceof Error ? err.message : "An unexpected error occurred")
+      const errorMessage = err instanceof Error ? err.message : "Произошла непредвиденная ошибка при анализе"
+      setError(errorMessage)
+      setUploadResponse({ message: "", s3_key: "", file_id: "", error: errorMessage })
     } finally {
       setIsAnalyzing(false)
-    }
-  }
-
-  // Handle sections analyzed from waveform
-  const handleSectionsAnalyzed = (sections: SuspiciousSection[]) => {
-    setSuspiciousSections(sections)
-  }
-
-  const renderAnalysisComponents = () => {
-    if (!file || !audioUrl) return
-
-    const summaryContainer = document.getElementById("analysis-summary-container")
-    if (summaryContainer) {
-      if (!summaryRootRef.current) {
-        summaryRootRef.current = createRoot(summaryContainer)
-      }
-      summaryRootRef.current.render(<AnalysisSummary probability={0} suspiciousSections={suspiciousSections} />)
-    }
-
-    // Render Suspicious Sections
-    const sectionsContainer = document.getElementById("suspicious-sections-container")
-    if (sectionsContainer) {
-      if (!sectionsRootRef.current) {
-        sectionsRootRef.current = createRoot(sectionsContainer)
-      }
-      sectionsRootRef.current.render(
-        <>
-          {suspiciousSections.map((section) => (
-            <div
-              key={section.sectionNumber}
-              className="p-3 bg-red-50 rounded-lg border border-red-100 flex items-center justify-between"
-            >
-              <div className="flex items-center">
-                <span className="font-medium text-red-700">Секция {section.sectionNumber}</span>
-                <span className="ml-2 text-sm text-gray-500">
-                  ({formatTime(section.startTime)} - {formatTime(section.endTime)})
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-red-700">{section.probability}%</span>
-                <AudioPlayer
-                  audioUrl={audioUrl}
-                  startTime={section.startTime}
-                  endTime={section.endTime}
-                  compact={true}
-                  hideVolumeControl={true}
-                />
-              </div>
-            </div>
-          ))}
-        </>,
-      )
     }
   }
 
@@ -160,28 +136,20 @@ export function UploadForm() {
     return `${minutes.toString().padStart(2, "0")}:${remainingSeconds.toString().padStart(2, "0")}`
   }
 
-  const saveToHistory = (audioFile: File, probability: number) => {
+  const saveToHistory = (audioFile: File, probability: number, apiResults?: AnalysisResultItem[]) => {
     try {
-      // Create a new history item
       const newHistoryItem: HistoryItem = {
         id: Date.now().toString(),
         filename: audioFile.name,
         fileSize: (audioFile.size / 1024 / 1024).toFixed(2) + " MB",
         date: new Date().toLocaleString(),
-        probability: probability,
+        probability: parseFloat(probability.toFixed(2)),
+        analysis_results: apiResults
       }
-
-      // Get existing history or initialize empty array
       const existingHistory = localStorage.getItem("audioCheckHistory")
       const history: HistoryItem[] = existingHistory ? JSON.parse(existingHistory) : []
-
-      // Add new item to the beginning of the array
       history.unshift(newHistoryItem)
-
-      // Limit history to 20 items
       const limitedHistory = history.slice(0, 20)
-
-      // Save back to localStorage
       localStorage.setItem("audioCheckHistory", JSON.stringify(limitedHistory))
     } catch (error) {
       console.error("Error saving to history:", error)
@@ -189,174 +157,145 @@ export function UploadForm() {
   }
 
   const handleRetry = () => {
-    // Clean up object URL
-    if (audioUrl) {
+    if (audioUrl && audioUrl.startsWith('blob:')) {
       URL.revokeObjectURL(audioUrl)
     }
-
-    // Instead of unmounting immediately, just mark the roots for cleanup
-    // They will be properly unmounted in the next useEffect cleanup
     setFile(null)
     setError(null)
     setShowWaveform(false)
     setAudioUrl(null)
     setSuspiciousSections([])
+    setAnalysisResultsApi(null)
+    setUploadResponse(null)
 
-    // Hide analysis results section
-    const analysisResults = document.getElementById("analysis-results")
-    if (analysisResults) {
-      analysisResults.classList.add("hidden")
+    const analysisResultsDiv = document.getElementById("analysis-results")
+    if (analysisResultsDiv) {
+      analysisResultsDiv.classList.add("hidden")
     }
-
-    // Schedule root cleanup for next render cycle
-    setTimeout(() => {
-      if (summaryRootRef.current) {
-        summaryRootRef.current.unmount()
-        summaryRootRef.current = null
-      }
-      if (sectionsRootRef.current) {
-        sectionsRootRef.current.unmount()
-        sectionsRootRef.current = null
-      }
-    }, 0)
   }
-
-  useEffect(() => {
-    // Cleanup function to unmount roots when component unmounts
-    return () => {
-      // Use setTimeout to ensure this happens after any pending renders
-      setTimeout(() => {
-        if (summaryRootRef.current) {
-          summaryRootRef.current.unmount()
-          summaryRootRef.current = null
-        }
-        if (sectionsRootRef.current) {
-          sectionsRootRef.current.unmount()
-          sectionsRootRef.current = null
-        }
-      }, 0)
-    }
-  }, [])
 
   return (
     <Card className="w-full max-w-4xl shadow-lg transition-all border-purple-100">
       <CardContent className="p-8">
         <div className="flex flex-col items-center space-y-6">
-          {error ? (
-            <Alert variant="destructive" className="mb-4">
+          {error && (
+            <Alert variant="destructive" className="mb-4 w-full">
               <AlertCircle className="h-4 w-4" />
               <AlertDescription>{error}</AlertDescription>
             </Alert>
-          ) : null}
-
-          {analysisMessage && !error && (
-            <Alert variant="default" className="border-green-500 text-green-700">
-              <AlertCircle className="h-4 w-4 text-green-500" />
-              <AlertDescription>{analysisMessage}</AlertDescription>
+          )}
+          {uploadResponse && uploadResponse.message && !error && (
+             <Alert variant="default" className="mb-4 w-full bg-green-50 border-green-200 text-green-700">
+                <AlertDescription>{uploadResponse.message}</AlertDescription>
             </Alert>
           )}
 
-          {!file ? (
-            <div className="w-full">
-              <div className="flex justify-center mb-6">
-                <div className="w-16 h-16 bg-purple-100 rounded-full flex items-center justify-center">
-                  <Music className="w-8 h-8 text-[#6a50d3]" />
-                </div>
-              </div>
-              <p className="text-center mb-4 text-gray-700 font-medium">Чтобы проверить аудиоконтент загрузите файл</p>
+          {!file && (
+            <div className="flex flex-col items-center text-center p-8 border-2 border-dashed border-gray-300 rounded-lg w-full">
+              <Upload className="w-16 h-16 text-gray-400 mb-4" />
+              <p className="text-lg font-semibold text-gray-700 mb-2">Перетащите аудиофайл сюда</p>
+              <p className="text-sm text-gray-500 mb-4">или</p>
+              <input
+                type="file"
+                id="audio-upload"
+                accept="audio/*"
+                onChange={handleFileChange}
+                className="hidden"
+              />
               <label
                 htmlFor="audio-upload"
-                className="flex flex-col items-center justify-center w-full h-40 border-2 border-purple-200 border-dashed rounded-lg cursor-pointer bg-gray-50 hover:bg-purple-50 transition-colors"
+                className="cursor-pointer inline-flex items-center justify-center px-6 py-3 border border-transparent text-base font-medium rounded-md text-white bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500"
               >
-                <div className="flex flex-col items-center justify-center pt-5 pb-6">
-                  <Upload className="w-10 h-10 mb-3 text-[#6a50d3]" />
-                  <p className="mb-2 text-sm font-medium text-[#6a50d3]">
-                    <span className="font-semibold">Upload audio file</span>
-                  </p>
-                  <p className="text-xs text-gray-500">.mp3, .wav, .ogg</p>
-                </div>
-                <input id="audio-upload" type="file" accept="audio/*" className="hidden" onChange={handleFileChange} />
+                Выберите файл
               </label>
+              <p className="mt-3 text-xs text-gray-400">Поддерживаемые форматы: MP3, WAV, OGG и др.</p>
             </div>
-          ) : (
+          )}
+
+          {file && (
             <div className="w-full space-y-4">
-              <div className="p-4 bg-purple-50 rounded-lg flex items-center">
-                <div className="w-10 h-10 bg-[#6a50d3] rounded-full flex items-center justify-center mr-3">
-                  <Music className="w-5 h-5 text-white" />
+              <div className="flex items-center justify-between p-4 border rounded-lg bg-gray-50">
+                <div className="flex items-center space-x-3">
+                  <Music className="w-6 h-6 text-purple-600" />
+                  <div>
+                    <p className="font-medium text-gray-800 truncate max-w-xs">{file.name}</p>
+                    <p className="text-sm text-gray-500">
+                      {(file.size / 1024 / 1024).toFixed(2)} MB
+                    </p>
+                  </div>
                 </div>
-                <div className="flex-1 truncate">
-                  <p className="text-sm font-medium text-gray-700 truncate">{file.name}</p>
-                  <p className="text-xs text-gray-500">{(file.size / 1024 / 1024).toFixed(2)} MB</p>
-                </div>
+                <Button variant="outline" size="sm" onClick={handleRetry} className="text-red-500 border-red-300 hover:bg-red-50">
+                  Загрузить другой
+                </Button>
               </div>
 
-              {/* Audio Waveform - only show after analysis */}
-              {showWaveform && <AudioWaveform audioFile={file} onSectionsAnalyzed={handleSectionsAnalyzed} />}
+              {showWaveform && audioUrl && (
+                <AudioWaveform 
+                  audioUrl={audioUrl} 
+                  analysisData={analysisResultsApi}
+                />
+              )}
+              
+              <Button
+                onClick={handleAnalyze}
+                disabled={isAnalyzing}
+                className="w-full bg-purple-600 hover:bg-purple-700 text-white py-3 rounded-lg text-lg font-semibold flex items-center justify-center space-x-2 transition-all duration-150 ease-in-out disabled:opacity-70"
+              >
+                {isAnalyzing ? (
+                  <Loader2 className="h-6 w-6 animate-spin" />
+                ) : (
+                  <Upload className="h-6 w-6" />
+                )}
+                <span>{isAnalyzing ? "Анализируем..." : "Анализировать"}</span>
+              </Button>
+            </div>
+          )}
 
-              {/* {result !== null ? (
-                <ResultDisplay probability={result} />
-              ) : (
-                <Button
-                  onClick={handleAnalyze}
-                  disabled={isAnalyzing}
-                  className="w-full bg-[#6a50d3] hover:bg-[#5f43cc] text-white py-6"
-                >
-                  {isAnalyzing ? (
-                    <>
-                      <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                      Analyzing...
-                    </>
+          {analysisResultsApi && analysisResultsApi.length > 0 && (
+            <div id="analysis-results" className="w-full space-y-6 mt-6">
+              <h3 className="text-2xl font-semibold text-gray-800 text-center">Результаты Анализа</h3>
+              
+              <Card>
+                <CardContent className="p-6">
+                  <h4 className="text-lg font-medium mb-3 text-gray-700">Анализ по сегментам:</h4>
+                  {suspiciousSections.length > 0 ? (
+                    <div className="space-y-3 max-h-80 overflow-y-auto">
+                      {suspiciousSections.map((section) => (
+                        <div
+                          key={section.sectionNumber}
+                          className="p-3 bg-gray-50 rounded-lg border border-gray-200 flex items-center justify-between hover:shadow-md transition-shadow duration-150"
+                        >
+                          <div className="flex items-center">
+                            <span className={`font-medium ${section.probability > 70 ? 'text-red-600' : (section.probability > 40 ? 'text-yellow-600' : 'text-green-600')}`}>
+                              Сегмент {section.sectionNumber}
+                            </span>
+                            <span className="ml-2 text-sm text-gray-500">
+                              ({formatTime(section.startTime)} - {formatTime(section.endTime)})
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className={`text-sm font-semibold ${section.probability > 70 ? 'text-red-600' : (section.probability > 40 ? 'text-yellow-600' : 'text-green-600')}`}>
+                              {section.probability.toFixed(2)}%
+                            </span>
+                            {audioUrl && (
+                               <AudioPlayer
+                                audioUrl={audioUrl} 
+                                startTime={section.startTime}
+                                endTime={section.endTime}
+                                compact={true}
+                                hideVolumeControl={true}
+                              />
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   ) : (
-                    "Check authenticity"
+                    <p className="text-gray-600">Подозрительные сегменты не обнаружены.</p>
                   )}
-                </Button>
-              )} */}
+                </CardContent>
+              </Card>
             </div>
-          )}
-
-          {file && !isAnalyzing && (
-            <div className="text-center">
-                <Button onClick={handleAnalyze} className="w-full md:w-auto bg-[#6a50d3] hover:bg-[#5f43cc]">
-                    <Upload className="mr-2 h-4 w-4" />
-                    Анализировать
-                </Button>
-            </div>
-          )}
-
-          {isAnalyzing && (
-            <div className="flex items-center justify-center py-4">
-              <Loader2 className="h-8 w-8 animate-spin text-[#6a50d3]" />
-              <p className="ml-3 text-gray-600">Анализ аудио...</p>
-            </div>
-          )}
-
-          {/* Условное отображение результатов анализа */}
-          {/* Секция результатов анализа (была скрыта по умолчанию) */}
-          <div id="analysis-results" className="mt-6 space-y-4 hidden">
-              {/* Контейнер для AnalysisSummary */} 
-              {/* Убрали ResultDisplay, так как он ожидает probability */} 
-              {/* Вместо него выше есть Alert для analysisMessage */} 
-              
-              {showWaveform && file && (
-                  <AudioWaveform audioFile={file} onSectionsAnalyzed={handleSectionsAnalyzed} />
-              )}
-
-              <div id="analysis-summary-container"></div>
-              
-              {suspiciousSections.length > 0 && (
-                <div className="space-y-3 pt-4 border-t border-gray-200">
-                  <h3 className="text-lg font-semibold text-gray-800">Подозрительные секции:</h3>
-                  <div id="suspicious-sections-container" className="space-y-3"></div>
-                </div>
-              )}
-          </div>
-
-          {(error || analysisMessage) && !isAnalyzing && (
-              <div className="text-center mt-4">
-                   <Button variant="outline" onClick={handleRetry} className="w-full md:w-auto">
-                      Загрузить другой файл
-                   </Button>
-              </div>
           )}
         </div>
       </CardContent>

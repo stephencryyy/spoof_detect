@@ -32,11 +32,21 @@ export interface LoginResponse {
   error?: string;
 }
 
+// Определение структуры для одного элемента в analysis_results
+export interface AnalysisResultItem {
+  chunk_id: string;
+  score: number; // Уже округленное до 4 знаков
+  start_time_seconds: number;
+  end_time_seconds: number;
+}
+
 // Типы для Upload
 export interface UploadAudioResponse {
-  id: string; // uuid
+  file_id: string; // Переименовано из id для соответствия с Go бэкендом
   s3_key: string;
   message: string;
   file_url?: string;
-  error?: string;
+  analysis_error?: string; // Ошибка от Python сервиса, если была
+  analysis_results?: AnalysisResultItem[]; // Массив результатов анализа
+  error?: string; // Общая ошибка от /api/check или Go API (не связанная с Python-анализом)
 } 

@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useRef, useState, useCallback } from "react"
 import WaveSurfer from "wavesurfer.js"
 import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.js';
 import { Play, Pause } from "lucide-react"
@@ -10,6 +10,11 @@ import type { AnalysisResultItem } from "../lib/types";
 interface AudioWaveformProps {
   audioUrl: string | null;
   analysisData: AnalysisResultItem[] | null;
+  playerKey?: string; // Optional, defaults to "waveform"
+  activePlayerKey: string | null;
+  onPlayRequest: (playerKey: string | null) => void;
+  onEnded: (playerKey: string) => void;
+  onProgressUpdate?: (playerKey: string, currentTime: number, duration: number) => void;
 }
 
 interface WaveformSectionData {
@@ -20,25 +25,34 @@ interface WaveformSectionData {
   color?: string;
 }
 
-export function AudioWaveform({ audioUrl, analysisData }: AudioWaveformProps) {
+export function AudioWaveform({
+  audioUrl,
+  analysisData,
+  playerKey = "waveform", // Default playerKey
+  activePlayerKey,
+  onPlayRequest,
+  onEnded,
+  onProgressUpdate
+}: AudioWaveformProps) {
   const waveformRef = useRef<HTMLDivElement>(null)
   const wavesurferRef = useRef<WaveSurfer | null>(null)
   const [duration, setDuration] = useState(0)
   const gridLinesRef = useRef<HTMLDivElement>(null)
-  const [isPlaying, setIsPlaying] = useState(false)
+  const [isWaveformPlaying, setIsWaveformPlaying] = useState(false) // Internal state of wavesurfer
   const [currentTime, setCurrentTime] = useState(0)
   const [displayableSections, setDisplayableSections] = useState<WaveformSectionData[]>([])
   const regionsPluginRef = useRef<RegionsPlugin | null>(null)
+  const rafIdRef = useRef<number | null>(null); // Ref for requestAnimationFrame ID
 
   useEffect(() => {
     if (!waveformRef.current || !audioUrl) {
-      if (wavesurferRef.current) {
-        wavesurferRef.current.destroy()
+    if (wavesurferRef.current) {
+      wavesurferRef.current.destroy()
         wavesurferRef.current = null
       }
       setDuration(0)
       setCurrentTime(0)
-      setIsPlaying(false)
+      setIsWaveformPlaying(false)
       setDisplayableSections([])
       if (gridLinesRef.current) gridLinesRef.current.innerHTML = ""
       return
@@ -47,20 +61,20 @@ export function AudioWaveform({ audioUrl, analysisData }: AudioWaveformProps) {
     if (wavesurferRef.current) {
       wavesurferRef.current.load(audioUrl)
     } else {
-      const wavesurfer = WaveSurfer.create({
-        container: waveformRef.current,
+    const wavesurfer = WaveSurfer.create({
+      container: waveformRef.current,
         waveColor: "#c4b5fd",
         progressColor: "#6a50d3",
         cursorColor: "#6a50d3",
-        height: 80,
-        barWidth: 2,
-        barGap: 1,
-        barRadius: 2,
-        normalize: true,
+      height: 80,
+      barWidth: 2,
+      barGap: 1,
+      barRadius: 2,
+      normalize: true,
         interact: true,
-      })
+    })
       wavesurferRef.current = wavesurfer
-      wavesurfer.load(audioUrl)
+    wavesurfer.load(audioUrl)
     }
     
     const ws = wavesurferRef.current
@@ -70,10 +84,16 @@ export function AudioWaveform({ audioUrl, analysisData }: AudioWaveformProps) {
       setDuration(audioDuration)
     })
 
-    ws.on("play", () => setIsPlaying(true))
-    ws.on("pause", () => setIsPlaying(false))
+    ws.on("play", () => setIsWaveformPlaying(true))
+    ws.on("pause", () => setIsWaveformPlaying(false))
     ws.on("timeupdate", (time) => setCurrentTime(time))
-    ws.on("finish", () => setIsPlaying(false))
+    ws.on("finish", () => {
+      setIsWaveformPlaying(false)
+      if (onProgressUpdate) {
+        const currentDuration = ws.getDuration() || 0;
+      }
+      onEnded(playerKey)
+    })
 
     return () => {
     }
@@ -136,9 +156,9 @@ export function AudioWaveform({ audioUrl, analysisData }: AudioWaveformProps) {
         if (lineStart > 0) {
             const position = (lineStart / duration) * 100
             if (position < 100) {
-                 const line = document.createElement("div")
+      const line = document.createElement("div")
                  line.className = "absolute top-0 h-full w-[1px] bg-purple-300 bg-opacity-40"
-                 line.style.left = `${position}%`
+      line.style.left = `${position}%`
                  gridLinesRef.current.appendChild(line)
             }
         }
@@ -150,15 +170,115 @@ export function AudioWaveform({ audioUrl, analysisData }: AudioWaveformProps) {
             const line = document.createElement("div")
             line.className = "absolute top-0 h-full w-[1px] bg-purple-300 bg-opacity-40"
             line.style.left = `${lastPosition}%`
-            gridLinesRef.current.appendChild(line)
+      gridLinesRef.current.appendChild(line)
         }
     }
 
   }, [duration, displayableSections])
 
-  const togglePlayPause = () => {
-    if (!wavesurferRef.current) return
-    wavesurferRef.current.playPause()
+  // Animation loop for progress updates
+  const animationLoop = useCallback(() => {
+    if (!wavesurferRef.current || !onProgressUpdate || activePlayerKey !== playerKey || !wavesurferRef.current.isPlaying()) {
+      if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current);
+      rafIdRef.current = null; // Ensure it's nulled if loop stops
+      return;
+    }
+    const currentWsTime = wavesurferRef.current.getCurrentTime();
+    const currentWsDuration = wavesurferRef.current.getDuration();
+    onProgressUpdate(playerKey, currentWsTime, currentWsDuration);
+    setCurrentTime(currentWsTime); // Keep internal current time updated
+
+    rafIdRef.current = requestAnimationFrame(animationLoop);
+  }, [playerKey, activePlayerKey, onProgressUpdate, wavesurferRef]);
+
+  // Effect to control WaveSurfer play/pause based on activePlayerKey
+  useEffect(() => {
+    const ws = wavesurferRef.current;
+    if (!ws) return;
+
+    if (activePlayerKey === playerKey) {
+      if (!ws.isPlaying()) {
+        ws.play();
+        // RAF will be started by the "play" event listener if not already running
+      }
+    } else {
+      if (ws.isPlaying()) {
+        ws.pause();
+      }
+      // Stop RAF if this player is no longer active (pause will also stop it via event listener)
+      // if (rafIdRef.current) {
+      //   cancelAnimationFrame(rafIdRef.current);
+      //   rafIdRef.current = null;
+      // }
+    }
+    // No specific cleanup here for RAF as play/pause event handlers will manage it.
+  }, [activePlayerKey, playerKey, wavesurferRef]);
+
+  // Effect for WaveSurfer event listeners
+  useEffect(() => {
+    const ws = wavesurferRef.current;
+    if (!ws) return;
+
+    const handlePlay = () => {
+        setIsWaveformPlaying(true);
+        if (activePlayerKey === playerKey) { // Only start RAF if this is the active player
+            if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current); // Clear any old one
+            rafIdRef.current = requestAnimationFrame(animationLoop);
+        }
+    };
+    const handlePause = () => {
+        setIsWaveformPlaying(false);
+        if (rafIdRef.current) {
+            cancelAnimationFrame(rafIdRef.current);
+            rafIdRef.current = null;
+        }
+    };
+    const handleFinish = () => {
+      setIsWaveformPlaying(false);
+      if (rafIdRef.current) { // Stop RAF on finish
+        cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = null;
+      }
+      if (onProgressUpdate) {
+        const currentDuration = ws.getDuration() || 0;
+      }
+      onEnded(playerKey);
+    };
+    const handleTimeUpdate = (time: number) => { // This can be simplified or removed if RAF is sole source of truth for parent
+      setCurrentTime(time); // Keep internal state updated
+      // onProgressUpdate is now primarily called by animationLoop
+      // if (activePlayerKey === playerKey && onProgressUpdate) {
+      //   const currentDuration = wavesurferRef.current?.getDuration() || 0;
+      //   onProgressUpdate(playerKey, time, currentDuration);
+      // }
+    };
+
+    ws.on("play", handlePlay);
+    ws.on("pause", handlePause);
+    ws.on("finish", handleFinish);
+    ws.on("timeupdate", handleTimeUpdate);
+    // Ready event is in the audioUrl useEffect
+
+    return () => {
+      // WaveSurfer instance might be destroyed, or we might unbind specific events
+      // If ws.destroy() is called elsewhere, it typically unbinds its own events.
+      // For safety, if ws instance still exists and has `un` method:
+      if (ws && typeof ws.un === 'function') {
+        ws.un("play", handlePlay);
+        ws.un("pause", handlePause);
+        ws.un("finish", handleFinish);
+        ws.un("timeupdate", handleTimeUpdate);
+      }
+    };
+  }, [wavesurferRef, playerKey, onEnded, activePlayerKey, onProgressUpdate]); // Dependencies for listeners
+
+  const handleTogglePlayPause = () => {
+    if (!wavesurferRef.current) return;
+    if (activePlayerKey === playerKey) {
+      onPlayRequest(null); // Request to deactivate (pause)
+    } else {
+      onPlayRequest(playerKey); // Request to activate (play)
+    }
   }
 
   const formatTime = (time: number) => {
@@ -179,11 +299,11 @@ export function AudioWaveform({ audioUrl, analysisData }: AudioWaveformProps) {
           variant="outline"
           size="sm"
           className="flex items-center gap-1 text-purple-600 hover:text-purple-700 border-purple-300 hover:bg-purple-50"
-          onClick={togglePlayPause}
+          onClick={handleTogglePlayPause}
           disabled={!audioUrl || duration === 0}
         >
-          {isPlaying ? <Pause size={16} /> : <Play size={16} />}
-          <span>{isPlaying ? "Пауза" : "Воспроизвести"}</span>
+          {activePlayerKey === playerKey ? <Pause size={16} /> : <Play size={16} />}
+          <span>{activePlayerKey === playerKey ? "Пауза" : "Воспроизвести"}</span>
         </Button>
         <div className="text-sm text-gray-500">
           {formatTime(currentTime)} / {formatTime(duration)}
@@ -212,7 +332,7 @@ export function AudioWaveform({ audioUrl, analysisData }: AudioWaveformProps) {
               const handleSectionClick = () => {
                 if (wavesurferRef.current) {
                   wavesurferRef.current.seekTo(section.start / duration)
-                  if (!isPlaying) {
+                  if (!isWaveformPlaying) {
                   }
                 }
               }

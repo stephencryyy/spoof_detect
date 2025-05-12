@@ -18,6 +18,7 @@ export interface SuspiciousSection {
   startTime: number;
   endTime: number;
   probability: number; // 0-100
+  chunk_id: string; // Added for unique player key
 }
 
 // Define the history item type
@@ -36,18 +37,38 @@ export function UploadForm() {
   const [error, setError] = useState<string | null>(null)
   const [showWaveform, setShowWaveform] = useState(false)
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
+  const [localFileBlobUrl, setLocalFileBlobUrl] = useState<string | null>(null)
+  const [audioDuration, setAudioDuration] = useState<number | null>(null);
   const [suspiciousSections, setSuspiciousSections] = useState<SuspiciousSection[]>([])
   const [analysisResultsApi, setAnalysisResultsApi] = useState<AnalysisResultItem[] | null>(null)
   const [uploadResponse, setUploadResponse] = useState<UploadAudioResponse | null>(null)
+  const [activePlayerKey, setActivePlayerKey] = useState<string | null>(null);
+  const [activePlayerProgress, setActivePlayerProgress] = useState<{ key: string, current: number, total: number } | null>(null);
+
+  useEffect(() => {
+    const currentBlobUrl = localFileBlobUrl;
+    return () => {
+      if (currentBlobUrl) {
+        URL.revokeObjectURL(currentBlobUrl);
+      }
+    };
+  }, [localFileBlobUrl]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0] || null
+
+    if (localFileBlobUrl) {
+      URL.revokeObjectURL(localFileBlobUrl);
+      setLocalFileBlobUrl(null);
+    }
+
     if (selectedFile && !selectedFile.type.startsWith("audio/")) {
       setError("Пожалуйста, загрузите аудиофайл")
       setFile(null)
       setAudioUrl(null)
       setAnalysisResultsApi(null)
       setUploadResponse(null)
+      setAudioDuration(null);
       return
     }
 
@@ -57,11 +78,19 @@ export function UploadForm() {
     setSuspiciousSections([])
     setAnalysisResultsApi(null)
     setUploadResponse(null)
+    setAudioDuration(null);
 
     if (selectedFile) {
-      const localUrl = URL.createObjectURL(selectedFile)
-      setAudioUrl(localUrl)
+      const newBlobUrl = URL.createObjectURL(selectedFile)
+      setAudioUrl(newBlobUrl)
+      setLocalFileBlobUrl(newBlobUrl);
       setShowWaveform(true)
+
+      const audioElement = new Audio(newBlobUrl);
+      audioElement.onloadedmetadata = () => {
+        setAudioDuration(audioElement.duration);
+      };
+
     } else {
       setAudioUrl(null)
       setShowWaveform(false)
@@ -101,13 +130,24 @@ export function UploadForm() {
         setAudioUrl(data.file_url)
       }
 
-      if (data.analysis_results && data.analysis_results.length > 0) {
-        setAnalysisResultsApi(data.analysis_results)
-        const newSuspiciousSections: SuspiciousSection[] = data.analysis_results.map((item, index) => ({
+      let finalAnalysisResults = data.analysis_results;
+      if (audioDuration !== null && data.analysis_results && data.analysis_results.length > 0) {
+        finalAnalysisResults = data.analysis_results.map((item, index, arr) => {
+          if (index === arr.length - 1) {
+            return { ...item, end_time_seconds: Math.min(item.end_time_seconds, audioDuration) };
+          }
+          return item;
+        });
+      }
+
+      if (finalAnalysisResults && finalAnalysisResults.length > 0) {
+        setAnalysisResultsApi(finalAnalysisResults);
+        const newSuspiciousSections: SuspiciousSection[] = finalAnalysisResults.map((item, index) => ({
           sectionNumber: index + 1,
           startTime: item.start_time_seconds,
           endTime: item.end_time_seconds,
           probability: parseFloat((item.score * 100).toFixed(2)),
+          chunk_id: item.chunk_id,
         }))
         setSuspiciousSections(newSuspiciousSections)
         setShowWaveform(true)
@@ -160,19 +200,54 @@ export function UploadForm() {
     if (audioUrl && audioUrl.startsWith('blob:')) {
       URL.revokeObjectURL(audioUrl)
     }
+    if (localFileBlobUrl) {
+      URL.revokeObjectURL(localFileBlobUrl);
+      setLocalFileBlobUrl(null);
+    }
+
     setFile(null)
     setError(null)
     setShowWaveform(false)
     setAudioUrl(null)
+    setAudioDuration(null);
     setSuspiciousSections([])
     setAnalysisResultsApi(null)
     setUploadResponse(null)
+    setActivePlayerKey(null);
 
     const analysisResultsDiv = document.getElementById("analysis-results")
     if (analysisResultsDiv) {
       analysisResultsDiv.classList.add("hidden")
     }
   }
+
+  const handlePlayRequest = (playerKeyToActivate: string | null) => {
+    setActivePlayerKey(prevActiveKey => {
+      const newActiveKey = prevActiveKey === playerKeyToActivate ? null : playerKeyToActivate;
+      if (newActiveKey === null) {
+        setActivePlayerProgress(null); // Clear progress when stopping/toggling off
+      }
+      // If activating a new player, progress will be updated by its own onProgressUpdate
+      return newActiveKey;
+    });
+  };
+
+  const handlePlayerEnded = (endedPlayerKey: string) => {
+    setActivePlayerKey(prevActiveKey => {
+      if (prevActiveKey === endedPlayerKey) {
+        setActivePlayerProgress(null); // Clear progress when player ends
+        return null;
+      }
+      return prevActiveKey;
+    });
+  };
+
+  const handleProgressUpdate = (playerKey: string, currentTime: number, duration: number) => {
+    // Only update progress if this player is supposed to be the active one
+    if (activePlayerKey === playerKey) {
+      setActivePlayerProgress({ key: playerKey, current: currentTime, total: duration });
+    }
+  };
 
   return (
     <Card className="w-full max-w-4xl shadow-lg transition-all border-purple-100">
@@ -233,6 +308,11 @@ export function UploadForm() {
                 <AudioWaveform 
                   audioUrl={audioUrl} 
                   analysisData={analysisResultsApi}
+                  playerKey="waveform"
+                  activePlayerKey={activePlayerKey}
+                  onPlayRequest={handlePlayRequest}
+                  onEnded={handlePlayerEnded}
+                  onProgressUpdate={handleProgressUpdate}
                 />
               )}
               
@@ -253,42 +333,72 @@ export function UploadForm() {
 
           {analysisResultsApi && analysisResultsApi.length > 0 && (
             <div id="analysis-results" className="w-full space-y-6 mt-6">
-              <h3 className="text-2xl font-semibold text-gray-800 text-center">Результаты Анализа</h3>
+              <h3 className="text-xl font-bold mb-4 text-gray-800 text-center">Результаты Анализа</h3>
               
               <Card>
                 <CardContent className="p-6">
                   <h4 className="text-lg font-medium mb-4 text-gray-700">Анализ по сегментам:</h4>
                   {suspiciousSections.length > 0 ? (
                     <div className="space-y-1">
-                      {suspiciousSections.map((section) => (
-                        <div
-                          key={section.sectionNumber}
-                          className="py-3 px-2 flex items-center justify-between border-b border-gray-100 last:border-b-0 hover:bg-gray-50 rounded-md transition-colors duration-150"
-                        >
-                          <div className="flex items-center">
-                            <span className={`font-medium ${section.probability > 70 ? 'text-red-600' : (section.probability > 40 ? 'text-yellow-600' : 'text-green-600')}`}>
-                              Сегмент {section.sectionNumber}
-                            </span>
-                            <span className="ml-2 text-sm text-gray-500">
-                              ({formatTime(section.startTime)} - {formatTime(section.endTime)})
-                            </span>
+                      {suspiciousSections.map((section) => {
+                        const segmentPlayerKey = section.chunk_id;
+                        const isSegmentActive = activePlayerKey === segmentPlayerKey;
+                        
+                        let progressPercent = 0;
+                        let backgroundColor = 'transparent';
+                        const highlightColor = section.probability > 70 ? 'rgba(255, 0, 0, 0.3)' : (section.probability > 40 ? 'rgba(255, 255, 0, 0.3)' : 'rgba(0, 255, 0, 0.2)');
+
+                        if (isSegmentActive && activePlayerProgress && activePlayerProgress.key === segmentPlayerKey) {
+                          const segmentDuration = section.endTime - section.startTime;
+                          const playedInSegment = activePlayerProgress.current - section.startTime;
+                          if (segmentDuration > 0) {
+                            progressPercent = Math.max(0, Math.min(100, (playedInSegment / segmentDuration) * 100));
+                          }
+                          // Use a gradient for progress fill
+                          backgroundColor = `linear-gradient(to right, ${highlightColor} ${progressPercent}%, transparent ${progressPercent}%)`;
+                        } else if (isSegmentActive) {
+                          // If it's active but no progress yet (e.g. just clicked play), show full highlight until progress starts
+                          // This might be too flashy, consider if needed or just rely on progress to fill.
+                          // For now, let's remove the full bg highlight on active but no progress, rely on gradient.
+                          // backgroundColor = highlightColor; 
+                        }
+
+                        return (
+                          <div
+                            key={segmentPlayerKey}
+                            className={`py-3 px-2 flex items-center justify-between border-b last:border-b-0 hover:bg-gray-50 rounded-md transition-colors duration-150 border-gray-100`}
+                            style={{ background: backgroundColor }}
+                          >
+                            <div className="flex items-center">
+                              <span className={`font-medium ${section.probability > 70 ? 'text-red-600' : (section.probability > 40 ? 'text-yellow-600' : 'text-green-600')}`}>
+                                Сегмент {section.sectionNumber}
+                              </span>
+                              <span className="ml-2 text-sm text-gray-500">
+                                ({formatTime(section.startTime)} - {formatTime(section.endTime)})
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className={`text-sm font-semibold ${section.probability > 70 ? 'text-red-600' : (section.probability > 40 ? 'text-yellow-600' : 'text-green-600')}`}>
+                                {section.probability.toFixed(2)}%
+                              </span>
+                              {localFileBlobUrl && (
+                                <AudioPlayer
+                                  audioUrl={localFileBlobUrl} 
+                                  startTime={section.startTime}
+                                  endTime={section.endTime}
+                                  compact={true}
+                                  hideVolumeControl={true}
+                                  playerKey={segmentPlayerKey}
+                                  activePlayerKey={activePlayerKey}
+                                  onPlayRequest={handlePlayRequest}
+                                  onEnded={handlePlayerEnded}
+                                  onProgressUpdate={handleProgressUpdate}
+                                />
+                              )}
+                            </div>
                           </div>
-                          <div className="flex items-center gap-2">
-                            <span className={`text-sm font-semibold ${section.probability > 70 ? 'text-red-600' : (section.probability > 40 ? 'text-yellow-600' : 'text-green-600')}`}>
-                              {section.probability.toFixed(2)}%
-                            </span>
-                            {audioUrl && (
-                               <AudioPlayer
-                                audioUrl={audioUrl} 
-                                startTime={section.startTime}
-                                endTime={section.endTime}
-                                compact={true}
-                                hideVolumeControl={true}
-                              />
-                            )}
-                          </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   ) : (
                     <p className="text-gray-600">Подозрительные сегменты не обнаружены.</p>

@@ -133,10 +133,14 @@ class AudioAnalysisServicer(audio_analyzer_pb2_grpc.AudioAnalysisServicer): # И
             input_tensor = torch.from_numpy(audio_data_np).unsqueeze(0) # Добавляем batch dim [1, NUM_SAMPLES]
             
             score_value = self._predict_score_for_chunk_tensor(input_tensor)
+            print(f"LOG_SCORE: Chunk {chunk_key} (ID: {chunk_id_str}), Raw Score from model: {score_value}, Type: {type(score_value)}")
             
+            # Округляем значение score до 4 знаков после запятой
+            score_value_rounded = round(score_value, 4)
+
             prediction = audio_analyzer_pb2.AudioChunkPrediction(
                 chunk_id=chunk_id_str,
-                score=score_value,
+                score=score_value_rounded, # Используем округленное значение
                 start_time_seconds=start_time,
                 end_time_seconds=end_time
             )

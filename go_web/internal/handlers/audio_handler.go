@@ -211,6 +211,14 @@ func (h *AudioHandler) UploadAudioFile(c *gin.Context) {
 	}
 
 	h.logger.Info("Audio analysis complete", zap.String("s3_key", s3Key), zap.Int("predictions_count", len(apiResponse.AnalysisResults)))
+
+	// Log the actual analysis results
+	if len(apiResponse.AnalysisResults) > 0 {
+		h.logger.Info("Detailed Analysis Results:", zap.Any("results", apiResponse.AnalysisResults))
+	} else {
+		h.logger.Info("No analysis results to log.")
+	}
+
 	c.JSON(http.StatusCreated, apiResponse)
 }
 

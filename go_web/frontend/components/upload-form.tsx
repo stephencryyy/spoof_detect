@@ -204,7 +204,7 @@ export function UploadForm() {
               />
               <label
                 htmlFor="audio-upload"
-                className="cursor-pointer inline-flex items-center justify-center px-6 py-3 border border-transparent text-base font-medium rounded-md text-white bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500"
+                className="cursor-pointer inline-flex items-center justify-center px-6 py-3 border border-transparent text-base font-medium rounded-md text-white bg-[#6a50d3] hover:bg-[#5f43cc] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#6a50d3]"
               >
                 Выберите файл
               </label>
@@ -216,7 +216,7 @@ export function UploadForm() {
             <div className="w-full space-y-4">
               <div className="flex items-center justify-between p-4 border rounded-lg bg-gray-50">
                 <div className="flex items-center space-x-3">
-                  <Music className="w-6 h-6 text-purple-600" />
+                  <Music className="w-6 h-6 text-[#6a50d3]" />
                   <div>
                     <p className="font-medium text-gray-800 truncate max-w-xs">{file.name}</p>
                     <p className="text-sm text-gray-500">
@@ -224,7 +224,7 @@ export function UploadForm() {
                     </p>
                   </div>
                 </div>
-                <Button variant="outline" size="sm" onClick={handleRetry} className="text-red-500 border-red-300 hover:bg-red-50">
+                <Button variant="outline" size="sm" onClick={handleRetry} className="text-red-600 border-red-400 hover:bg-red-100 hover:border-red-500">
                   Загрузить другой
                 </Button>
               </div>
@@ -239,7 +239,7 @@ export function UploadForm() {
               <Button
                 onClick={handleAnalyze}
                 disabled={isAnalyzing}
-                className="w-full bg-purple-600 hover:bg-purple-700 text-white py-3 rounded-lg text-lg font-semibold flex items-center justify-center space-x-2 transition-all duration-150 ease-in-out disabled:opacity-70"
+                className="w-full bg-[#6a50d3] hover:bg-[#5f43cc] text-white py-3 rounded-lg text-lg font-semibold flex items-center justify-center space-x-2 transition-all duration-150 ease-in-out disabled:opacity-70"
               >
                 {isAnalyzing ? (
                   <Loader2 className="h-6 w-6 animate-spin" />
@@ -257,13 +257,13 @@ export function UploadForm() {
               
               <Card>
                 <CardContent className="p-6">
-                  <h4 className="text-lg font-medium mb-3 text-gray-700">Анализ по сегментам:</h4>
+                  <h4 className="text-lg font-medium mb-4 text-gray-700">Анализ по сегментам:</h4>
                   {suspiciousSections.length > 0 ? (
-                    <div className="space-y-3 max-h-80 overflow-y-auto">
+                    <div className="space-y-1">
                       {suspiciousSections.map((section) => (
                         <div
                           key={section.sectionNumber}
-                          className="p-3 bg-gray-50 rounded-lg border border-gray-200 flex items-center justify-between hover:shadow-md transition-shadow duration-150"
+                          className="py-3 px-2 flex items-center justify-between border-b border-gray-100 last:border-b-0 hover:bg-gray-50 rounded-md transition-colors duration-150"
                         >
                           <div className="flex items-center">
                             <span className={`font-medium ${section.probability > 70 ? 'text-red-600' : (section.probability > 40 ? 'text-yellow-600' : 'text-green-600')}`}>

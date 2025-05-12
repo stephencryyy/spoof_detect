@@ -1,20 +1,22 @@
 package main
 
 import (
+	"context" // Added context for gRPC client creation
 	"log"
 	"net/http" // Required for http.StatusOK if used in protected route example
 
 	"example.com/auth_service/internal/auth"
 	"example.com/auth_service/internal/config"
 	"example.com/auth_service/internal/database"
+	"example.com/auth_service/internal/grpc_clients" // Added gRPC client package
 	"example.com/auth_service/internal/handlers"
 	"example.com/auth_service/internal/middleware"
-	"example.com/auth_service/internal/s3service" // Add S3 service import
+	"example.com/auth_service/internal/s3service"
 	"example.com/auth_service/pkg/logger"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-	"go.uber.org/zap" // For logger error handling
+	"go.uber.org/zap"
 )
 
 func main() {
@@ -31,7 +33,6 @@ func main() {
 	}
 	defer func() {
 		if syncErr := appLogger.Sync(); syncErr != nil {
-			// Это может быть проблемой, если stderr также не доступен
 			log.Printf("Warning: failed to sync logger: %v\n", syncErr)
 		}
 	}()
@@ -50,30 +51,45 @@ func main() {
 	if err != nil {
 		appLogger.Fatal("Failed to initialize S3 service", zap.Error(err))
 	}
+	// Ensure S3 bucket exists or create it
+	if err := s3Svc.EnsureBucketExists(context.Background()); err != nil { // Используем context.Background() для инициализации
+		appLogger.Fatal("Failed to ensure S3 bucket exists", zap.String("bucket", cfg.S3.BucketName), zap.Error(err))
+	}
+
+	// Initialize Python Audio Analyzer gRPC Client
+	// Using context.Background() for client creation, as it's part of app startup.
+	// Consider a more specific context if long-running initial connection attempts are an issue.
+	pyAnalyzerClient, err := grpc_clients.NewPythonAudioAnalyzerClient(context.Background(), cfg.PythonGrpcServiceAddr, appLogger)
+	if err != nil {
+		appLogger.Fatal("Failed to initialize Python Audio Analyzer gRPC client", zap.Error(err), zap.String("address", cfg.PythonGrpcServiceAddr))
+	}
+	defer func() {
+		if clientCloseErr := pyAnalyzerClient.Close(); clientCloseErr != nil {
+			appLogger.Error("Failed to close Python Audio Analyzer gRPC client", zap.Error(clientCloseErr))
+		}
+	}()
+	appLogger.Info("Python Audio Analyzer gRPC client initialized", zap.String("target_address", cfg.PythonGrpcServiceAddr))
 
 	// Initialize Gin router
-	// gin.SetMode(gin.ReleaseMode) // Uncomment for production
 	router := gin.Default()
-	// router.Use(gin.Recovery()) // gin.Default() already includes Recovery and Logger middleware
 
 	// Setup CORS middleware
 	corsConfig := cors.DefaultConfig()
 	corsConfig.AllowOrigins = []string{"http://localhost:3000"} // URL вашего фронтенда
 	corsConfig.AllowMethods = []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
 	corsConfig.AllowHeaders = []string{"Origin", "Content-Type", "Accept", "Authorization"}
-	// Если вы планируете использовать cookies или аутентификацию через заголовки, которые должны быть доступны JS
-	// corsConfig.AllowCredentials = true
-	router.Use(cors.New(corsConfig)) // Применение middleware
+	router.Use(cors.New(corsConfig))
 
 	// Setup dependencies
 	userRepo := database.NewUserRepository(db, appLogger)
 	audioRepo := database.NewAudioRepository(db, appLogger)
+	audioTaskRepo := database.NewAudioProcessingTaskRepository(db, appLogger) // Initialize AudioProcessingTaskRepository
 
-	// Pass userRepo to AuthService
 	authSvc := auth.NewAuthService(cfg.JWT.SecretKey, cfg.JWT.ExpirationHours, userRepo)
 
 	userHandler := handlers.NewUserHandler(authSvc, userRepo, appLogger)
-	audioHandler := handlers.NewAudioHandler(s3Svc, audioRepo, appLogger)
+	// Pass pyAnalyzerClient and audioTaskRepo to NewAudioHandler
+	audioHandler := handlers.NewAudioHandler(s3Svc, audioRepo, audioTaskRepo, pyAnalyzerClient, cfg, appLogger)
 
 	// Setup routes
 	apiV1 := router.Group("/api/v1")
@@ -84,23 +100,18 @@ func main() {
 			userRoutes.POST("/login", userHandler.LoginUser)
 		}
 
-		// Audio routes (protected)
 		authMW := middleware.AuthMiddleware(authSvc, appLogger)
 		audioRoutes := apiV1.Group("/audio")
-		audioRoutes.Use(authMW) // Apply auth middleware to all /audio routes
+		audioRoutes.Use(authMW)
 		{
 			audioRoutes.POST("/upload", audioHandler.UploadAudioFile)
 		}
-
-		// Example of a protected route (requires JWT)
-		// protectedRoutes := apiV1.Group("/protected")
 	}
 
 	router.GET("/ping", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "pong"})
 	})
 
-	// Start server
 	appLogger.Info("Server starting", zap.String("port", cfg.AppPort))
 	if err := router.Run(":" + cfg.AppPort); err != nil {
 		appLogger.Fatal("Failed to start server", zap.Error(err))

@@ -11,12 +11,13 @@ import (
 // Config holds all configuration for the application.
 // Values are loaded from environment variables.
 type Config struct {
-	AppPort   string
-	Database  DatabaseConfig // Renamed from internal/database.DBConfig to avoid import cycle if that was moved here
-	JWT       JWTConfig
-	LogLevel  string   // e.g., "debug", "info", "warn", "error"
-	LogFormat string   // e.g., "json", "console"
-	S3        S3Config // New S3 config section
+	AppPort               string
+	Database              DatabaseConfig // Renamed from internal/database.DBConfig to avoid import cycle if that was moved here
+	JWT                   JWTConfig
+	LogLevel              string   // e.g., "debug", "info", "warn", "error"
+	LogFormat             string   // e.g., "json", "console"
+	S3                    S3Config // New S3 config section
+	PythonGrpcServiceAddr string   // Address for the Python gRPC audio analysis service
 }
 
 // DatabaseConfig holds database connection parameters.
@@ -87,6 +88,8 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("invalid S3_USE_PATH_STYLE value: %s, error: %w", s3UsePathStyleStr, err)
 	}
 
+	pythonGrpcAddr := getEnv("PYTHON_GRPC_SERVICE_ADDR", "localhost:50052") // Default for local Python
+
 	return &Config{
 		AppPort: appPort,
 		Database: DatabaseConfig{
@@ -111,6 +114,7 @@ func Load() (*Config, error) {
 			Region:          s3Region,
 			UsePathStyle:    s3UsePathStyle,
 		},
+		PythonGrpcServiceAddr: pythonGrpcAddr,
 	}, nil
 }
 

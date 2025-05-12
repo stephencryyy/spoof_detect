@@ -24,21 +24,20 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x14\x61udio_analyzer.proto\x12\raudioanalyzer\"J\n\x13\x41nalyzeAudioRequest\x12\x19\n\x11minio_bucket_name\x18\x01 \x01(\t\x12\x18\n\x10minio_object_key\x18\x02 \x01(\t\"\xac\x01\n\x14\x41nalyzeAudioResponse\x12I\n\x0bpredictions\x18\x01 \x03(\x0b\x32\x34.audioanalyzer.AnalyzeAudioResponse.PredictionsEntry\x12\x15\n\rerror_message\x18\x02 \x01(\t\x1a\x32\n\x10PredictionsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\x02:\x02\x38\x01\x32h\n\rAudioAnalysis\x12W\n\x0c\x41nalyzeAudio\x12\".audioanalyzer.AnalyzeAudioRequest\x1a#.audioanalyzer.AnalyzeAudioResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x14\x61udio_analyzer.proto\x12\raudioanalyzer\"J\n\x13\x41nalyzeAudioRequest\x12\x19\n\x11minio_bucket_name\x18\x01 \x01(\t\x12\x18\n\x10minio_object_key\x18\x02 \x01(\t\"m\n\x14\x41udioChunkPrediction\x12\x10\n\x08\x63hunk_id\x18\x01 \x01(\t\x12\r\n\x05score\x18\x02 \x01(\x02\x12\x1a\n\x12start_time_seconds\x18\x03 \x01(\x02\x12\x18\n\x10\x65nd_time_seconds\x18\x04 \x01(\x02\"g\n\x14\x41nalyzeAudioResponse\x12\x38\n\x0bpredictions\x18\x01 \x03(\x0b\x32#.audioanalyzer.AudioChunkPrediction\x12\x15\n\rerror_message\x18\x02 \x01(\t2h\n\rAudioAnalysis\x12W\n\x0c\x41nalyzeAudio\x12\".audioanalyzer.AnalyzeAudioRequest\x1a#.audioanalyzer.AnalyzeAudioResponseB,Z*example.com/auth_service/gen/audioanalyzerb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'audio_analyzer_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
-  DESCRIPTOR._loaded_options = None
-  _globals['_ANALYZEAUDIORESPONSE_PREDICTIONSENTRY']._loaded_options = None
-  _globals['_ANALYZEAUDIORESPONSE_PREDICTIONSENTRY']._serialized_options = b'8\001'
+  _globals['DESCRIPTOR']._loaded_options = None
+  _globals['DESCRIPTOR']._serialized_options = b'Z*example.com/auth_service/gen/audioanalyzer'
   _globals['_ANALYZEAUDIOREQUEST']._serialized_start=39
   _globals['_ANALYZEAUDIOREQUEST']._serialized_end=113
-  _globals['_ANALYZEAUDIORESPONSE']._serialized_start=116
-  _globals['_ANALYZEAUDIORESPONSE']._serialized_end=288
-  _globals['_ANALYZEAUDIORESPONSE_PREDICTIONSENTRY']._serialized_start=238
-  _globals['_ANALYZEAUDIORESPONSE_PREDICTIONSENTRY']._serialized_end=288
-  _globals['_AUDIOANALYSIS']._serialized_start=290
-  _globals['_AUDIOANALYSIS']._serialized_end=394
+  _globals['_AUDIOCHUNKPREDICTION']._serialized_start=115
+  _globals['_AUDIOCHUNKPREDICTION']._serialized_end=224
+  _globals['_ANALYZEAUDIORESPONSE']._serialized_start=226
+  _globals['_ANALYZEAUDIORESPONSE']._serialized_end=329
+  _globals['_AUDIOANALYSIS']._serialized_start=331
+  _globals['_AUDIOANALYSIS']._serialized_end=435
 # @@protoc_insertion_point(module_scope)

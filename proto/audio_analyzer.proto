@@ -1,6 +1,7 @@
 syntax = "proto3";
 
-package audioanalyzer; // Изменяем пакет, как в вашем примере
+package audioanalyzer;
+option go_package = "example.com/auth_service/gen/proto";
 
 // Сервис для анализа аудио
 service AudioAnalysis {
@@ -16,8 +17,15 @@ message AnalyzeAudioRequest {
   // Оставим task_id закомментированным, его можно будет добавить позже при необходимости
 }
 
+message AudioChunkPrediction {
+  string chunk_id = 1;         // Например, "chunk_0", "chunk_1"
+  float score = 2;             // Оценка вероятности спуфинга
+  float start_time_seconds = 3; // Время начала чанка в секундах от начала файла
+  float end_time_seconds = 4;   // Время окончания чанка в секундах
+}
+
 // Ответ с результатами анализа
 message AnalyzeAudioResponse {
-  map<string, float> predictions = 1; // Карта с предсказаниями (ключ - идентификатор чанка, значение - предсказание)
+  repeated AudioChunkPrediction predictions = 1; // Список предсказаний по чанкам
   string error_message = 2;         // Сообщение об ошибке, если что-то пошло не так
 }

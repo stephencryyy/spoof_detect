@@ -1,21 +1,22 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"example.com/auth_service/internal/config"
+	"example.com/auth_service/internal/grpc_clients"
 	"example.com/auth_service/internal/middleware"
 	"example.com/auth_service/internal/models"
-	"example.com/auth_service/internal/s3service" // Import the S3 service
-	"example.com/auth_service/pkg/logger"         // Import logger
+	"example.com/auth_service/internal/s3service"
+	"example.com/auth_service/pkg/logger"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"go.uber.org/zap" // For structured logging fields
-	// "example.com/auth_service/pkg/logger"
-	// "go.uber.org/zap"
+	"go.uber.org/zap"
 )
 
 const (
@@ -30,101 +31,119 @@ var allowedAudioExtensions = map[string]bool{
 	".ogg": true,
 }
 
+// AudioAnalysisResult represents a single chunk's analysis result for the API response.
+// We define a new struct here to have control over JSON field names if needed,
+// and to potentially add/omit fields compared to the gRPC pb.AudioChunkPrediction.
+type AudioAnalysisResult struct {
+	ChunkID        string  `json:"chunk_id"`
+	Score          float32 `json:"score"`
+	StartTimestamp float32 `json:"start_time_seconds"`
+	EndTimestamp   float32 `json:"end_time_seconds"`
+}
+
+// UploadAndAnalyzeAudioResponse defines the structure for a successful audio upload and analysis response.
+type UploadAndAnalyzeAudioResponse struct {
+	FileID          uuid.UUID             `json:"file_id"`
+	S3Key           string                `json:"s3_key"`
+	Message         string                `json:"message"`
+	FileURL         string                `json:"file_url,omitempty"`
+	AnalysisError   string                `json:"analysis_error,omitempty"` // Error message from Python service, if any
+	AnalysisResults []AudioAnalysisResult `json:"analysis_results,omitempty"`
+}
+
 // AudioHandler handles HTTP requests related to audio files.
 type AudioHandler struct {
-	s3Service *s3service.S3Service
-	audioRepo models.AudioRepository
-	logger    *logger.Logger // Use our logger type
+	s3Service        *s3service.S3Service
+	audioRepo        models.AudioRepository
+	audioTaskRepo    models.AudioProcessingTaskRepository
+	pyAnalyzerClient grpc_clients.PythonAudioAnalyzerClient
+	appConfig        *config.Config
+	logger           *logger.Logger
 }
 
 // NewAudioHandler creates a new AudioHandler.
-func NewAudioHandler(s3Svc *s3service.S3Service, audioRepo models.AudioRepository, appLogger *logger.Logger) *AudioHandler { // Accept logger
+func NewAudioHandler(
+	s3Svc *s3service.S3Service,
+	audioRepo models.AudioRepository,
+	audioTaskRepo models.AudioProcessingTaskRepository,
+	pyClient grpc_clients.PythonAudioAnalyzerClient,
+	cfg *config.Config,
+	appLogger *logger.Logger,
+) *AudioHandler {
 	return &AudioHandler{
-		s3Service: s3Svc,
-		audioRepo: audioRepo,
-		logger:    appLogger, // Assign logger
+		s3Service:        s3Svc,
+		audioRepo:        audioRepo,
+		audioTaskRepo:    audioTaskRepo,
+		pyAnalyzerClient: pyClient,
+		appConfig:        cfg,
+		logger:           appLogger,
 	}
 }
 
-// UploadAudioFile handles new audio file uploads.
+// UploadAudioFile handles new audio file uploads and triggers analysis.
 // POST /api/v1/audio/upload
 func (h *AudioHandler) UploadAudioFile(c *gin.Context) {
-	h.logger.Info("UploadAudioFile: Received request") // Use logger
+	h.logger.Info("UploadAudioFile: Received request")
 
-	// 1. Authentication & User ID retrieval
 	claims, exists := middleware.GetCurrentUserClaims(c)
 	if !exists || claims == nil {
-		h.logger.Warn("UploadAudioFile: User claims not found in context") // Use logger
+		h.logger.Warn("UploadAudioFile: User claims not found in context")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized: user claims not found"})
 		return
 	}
 	userID, err := uuid.Parse(claims.UserID)
 	if err != nil {
-		h.logger.Error("UploadAudioFile: Invalid user ID in JWT claims", zap.String("user_id_str", claims.UserID), zap.Error(err)) // Use logger
+		h.logger.Error("UploadAudioFile: Invalid user ID in JWT claims", zap.String("user_id_str", claims.UserID), zap.Error(err))
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized: invalid user ID in token"})
 		return
 	}
 
-	// 2. File Processing (multipart/form-data)
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxUploadSize)
 	file, header, err := c.Request.FormFile(fileFormField)
 	if err != nil {
 		if err.Error() == "http: request body too large" {
-			h.logger.Warn("UploadAudioFile: File size limit exceeded", zap.Error(err), zap.Int64("limit_bytes", maxUploadSize)) // Use logger
+			h.logger.Warn("UploadAudioFile: File size limit exceeded", zap.Error(err), zap.Int64("limit_bytes", maxUploadSize))
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("File size limit exceeded. Max size: %d MB", maxUploadSize/(1024*1024))})
 			return
 		}
-		h.logger.Error("UploadAudioFile: Error retrieving file from form", zap.Error(err)) // Use logger
+		h.logger.Error("UploadAudioFile: Error retrieving file from form", zap.Error(err))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid file upload request: " + err.Error()})
 		return
 	}
 	defer file.Close()
 
 	originalFilename := filepath.Clean(header.Filename)
-	// Basic sanitization or further validation of filename can be added here.
 	if originalFilename == "." || originalFilename == "/" {
 		originalFilename = "uploaded_file"
 	}
 
-	// ---> Start File Extension Validation <---
 	ext := strings.ToLower(filepath.Ext(originalFilename))
 	if !allowedAudioExtensions[ext] {
 		h.logger.Warn("UploadAudioFile: Invalid file extension", zap.String("filename", header.Filename), zap.String("extension", ext))
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid file format. Allowed formats: %v", getAllowedExtensionsList())})
 		return
 	}
-	// ---> End File Extension Validation <---
 
-	// Determine content type (MIME type)
-	// The header.Header.Get("Content-Type") might be provided by the client,
-	// but it's better to detect it from the file content if possible, or validate it.
-	// For simplicity, we'll use the one from the header or a default if not provided.
 	contentType := header.Header.Get("Content-Type")
 	if contentType == "" {
-		contentType = "application/octet-stream" // Default MIME type
+		contentType = "application/octet-stream"
 	}
 
-	// 3. Generate S3 Key
-	// Example: user_id/timestamp_nanoseconds/sanitized_filename.extension
-	baseFilename := strings.TrimSuffix(originalFilename, filepath.Ext(originalFilename)) // Use original extension for removing suffix
-	safeBaseFilename := strings.ReplaceAll(strings.ToLower(baseFilename), " ", "_")      // Basic sanitization
+	baseFilename := strings.TrimSuffix(originalFilename, filepath.Ext(originalFilename))
+	safeBaseFilename := strings.ReplaceAll(strings.ToLower(baseFilename), " ", "_")
 	s3Key := fmt.Sprintf("%s/%d/%s%s", userID.String(), time.Now().UnixNano(), safeBaseFilename, ext)
 
-	h.logger.Info("Attempting to upload to S3", zap.String("s3_key", s3Key), zap.String("content_type", contentType)) // Use logger
+	h.logger.Info("Attempting to upload to S3", zap.String("s3_key", s3Key), zap.String("content_type", contentType))
 
-	// 4. Upload to S3/MinIO
-	// The context from Gin (c.Request.Context()) should be used for S3 operations if they can be long-running.
 	fileURL, err := h.s3Service.UploadFile(c.Request.Context(), s3Key, file, contentType)
 	if err != nil {
 		h.logger.Error("Failed to upload file to S3", zap.String("s3_key", s3Key), zap.Error(err))
-		// Return standard error
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload file to storage"})
 		return
 	}
 
-	// 5. Save Metadata to PostgreSQL
 	audioFileMetadata := &models.AudioFile{
-		ID:               uuid.New(), // New ID for this audio file record
+		ID:               uuid.New(),
 		UserID:           userID,
 		S3Key:            s3Key,
 		OriginalFilename: originalFilename,
@@ -134,24 +153,73 @@ func (h *AudioHandler) UploadAudioFile(c *gin.Context) {
 	}
 
 	if err := h.audioRepo.SaveAudioFile(c.Request.Context(), audioFileMetadata); err != nil {
-		h.logger.Error("Failed to save audio metadata to DB", zap.String("s3_key", s3Key), zap.Error(err)) // Use logger
-		// Consider a cleanup strategy: if DB save fails, should we delete from S3?
-		// For now, we just return an error. This might leave an orphaned file in S3.
+		h.logger.Error("Failed to save audio metadata to DB", zap.String("s3_key", s3Key), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save audio file metadata"})
 		return
 	}
 
-	h.logger.Info("Audio file uploaded and metadata saved",
-		zap.String("userID", userID.String()),
+	h.logger.Info("Audio file uploaded and metadata saved. Triggering gRPC analysis...",
 		zap.String("s3_key", s3Key),
-		zap.String("audioFileID", audioFileMetadata.ID.String())) // Use logger
+		zap.String("bucketName", h.appConfig.S3.BucketName)) // Log bucket name from config
 
-	c.JSON(http.StatusCreated, models.UploadAudioResponse{
-		ID:      audioFileMetadata.ID,
+	// Call Python gRPC service for analysis
+	// Use a new context for the gRPC call, potentially with a timeout from config or a reasonable default.
+	// c.Request.Context() is for the incoming HTTP request.
+	grpcCtx, grpcCancel := context.WithTimeout(context.Background(), 5*time.Minute) // Example timeout
+	defer grpcCancel()
+
+	analysisResp, err := h.pyAnalyzerClient.AnalyzeAudio(grpcCtx, h.appConfig.S3.BucketName, s3Key)
+
+	apiResponse := UploadAndAnalyzeAudioResponse{
+		FileID:  audioFileMetadata.ID,
 		S3Key:   s3Key,
-		Message: "Audio file uploaded successfully",
-		FileURL: fileURL, // This URL might be empty if S3 endpoint resolution failed in s3service
-	})
+		Message: "Audio file uploaded. Analysis result follows.",
+		FileURL: fileURL,
+	}
+
+	if err != nil {
+		h.logger.Error("Failed to call Python gRPC audio analysis service", zap.String("s3_key", s3Key), zap.Error(err))
+		apiResponse.Message = "Audio file uploaded, but analysis failed to start."
+		apiResponse.AnalysisError = "gRPC call error: " + err.Error()
+		// It's important to still return StatusCreated or StatusOK because the file upload part was successful.
+		// The client can check the AnalysisError field.
+		c.JSON(http.StatusCreated, apiResponse) // Or http.StatusInternalServerError if we consider this a full failure
+		return
+	}
+
+	if analysisResp.ErrorMessage != "" {
+		h.logger.Warn("Python gRPC service returned an error during analysis",
+			zap.String("s3_key", s3Key),
+			zap.String("python_error", analysisResp.ErrorMessage))
+		apiResponse.AnalysisError = analysisResp.ErrorMessage
+		apiResponse.Message = "Audio file uploaded. Analysis completed with errors."
+	}
+
+	if len(analysisResp.Predictions) > 0 {
+		apiResponse.AnalysisResults = make([]AudioAnalysisResult, len(analysisResp.Predictions))
+		for i, pred := range analysisResp.Predictions {
+			apiResponse.AnalysisResults[i] = AudioAnalysisResult{
+				ChunkID:        pred.ChunkId,
+				Score:          pred.Score,
+				StartTimestamp: pred.StartTimeSeconds,
+				EndTimestamp:   pred.EndTimeSeconds,
+			}
+		}
+		if apiResponse.AnalysisError == "" { // If there was no major gRPC or Python error
+			apiResponse.Message = "Audio file uploaded and analyzed successfully."
+		}
+	}
+
+	h.logger.Info("Audio analysis complete", zap.String("s3_key", s3Key), zap.Int("predictions_count", len(apiResponse.AnalysisResults)))
+
+	// Log the actual analysis results
+	if len(apiResponse.AnalysisResults) > 0 {
+		h.logger.Info("Detailed Analysis Results:", zap.Any("results", apiResponse.AnalysisResults))
+	} else {
+		h.logger.Info("No analysis results to log.")
+	}
+
+	c.JSON(http.StatusCreated, apiResponse)
 }
 
 // Helper function to get list of allowed extensions for error message

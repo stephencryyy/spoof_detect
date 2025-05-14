@@ -6,4 +6,8 @@ torchaudio
 pandas
 transformers
 scikit-learn
-seaborn 
+seaborn
+grpcio
+protobuf
+redis
+minio 

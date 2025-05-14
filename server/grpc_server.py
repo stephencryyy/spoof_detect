@@ -9,8 +9,12 @@ import torchaudio # Для обработки аудио
 import redis # Для взаимодействия с Redis
 from minio import Minio # <--- Добавлен импорт MinIO
 from minio.error import S3Error # <--- Для обработки ошибок MinIO
-from typing import Dict, Tuple, Optional # Добавил Optional
+from typing import List, Tuple, Optional # Изменено Dict на List
 import uuid # Для генерации request_id, если он не приходит
+import logging
+
+# Получаем экземпляр логгера
+logger = logging.getLogger(__name__)
 
 # Импорт сгенерированного кода
 import audio_analyzer_pb2
@@ -42,6 +46,8 @@ MINIO_SECRET_KEY = os.getenv('MINIO_SECRET_KEY', 'minioadmin') # Пример
 MINIO_SECURE = os.getenv('MINIO_SECURE', 'False').lower() == 'true'
 MINIO_BUCKET_NAME = os.getenv('MINIO_BUCKET_NAME', 'your-audio-bucket')
 
+# Рассчитываем длительность чанка в секундах
+CHUNK_DURATION_SECONDS = NUM_SAMPLES / SAMPLE_RATE
 
 # Используем имя сервиса и сообщения из README.md
 # Если ваши сгенерированные файлы используют другие имена, их нужно будет поправить
@@ -99,37 +105,51 @@ class AudioAnalysisServicer(audio_analyzer_pb2_grpc.AudioAnalysisServicer): # И
         score = torch.sigmoid(logit).item()
         return score
 
-    def _process_chunk_from_redis(self, request_id_for_redis: str, chunk_idx: int) -> Tuple[str, Optional[float], Optional[str]]:
+    def _process_chunk_from_redis(self, request_id_for_redis: str, chunk_idx: int) -> Tuple[Optional[audio_analyzer_pb2.AudioChunkPrediction], Optional[str]]:
         """
-        Загружает чанк из Redis, выполняет предсказание и возвращает результат.
-        Возвращает (chunk_id_str, score, error_message)
+        Загружает чанк из Redis, выполняет предсказание и возвращает объект AudioChunkPrediction или ошибку.
+        Возвращает (AudioChunkPrediction, None) или (None, error_message)
         """
         chunk_key = f"{request_id_for_redis}:chunk_{chunk_idx}"
         chunk_id_str = f"chunk_{chunk_idx}"
+        
+        start_time = chunk_idx * CHUNK_DURATION_SECONDS
+        end_time = (chunk_idx + 1) * CHUNK_DURATION_SECONDS
+
         try:
             chunk_data_bytes = self.redis_client.get(chunk_key)
             if chunk_data_bytes is None:
-                print(f"Ошибка: Чанк {chunk_key} не найден в Redis.")
-                return chunk_id_str, None, f"Chunk {chunk_key} not found in Redis"
+                error_msg = f"Chunk {chunk_key} not found in Redis"
+                print(f"Ошибка: {error_msg}")
+                return None, error_msg
 
-            # Преобразование байтов обратно в тензор NumPy/PyTorch
             audio_data_np = np.frombuffer(chunk_data_bytes, dtype=np.float32)
             
             if audio_data_np.shape[0] != NUM_SAMPLES:
-                error_msg = f"Ошибка: Чанк {chunk_key} имеет неверный размер. Ожидалось {NUM_SAMPLES}, получено {audio_data_np.shape[0]}."
+                error_msg = f"Chunk {chunk_key} has incorrect size. Expected {NUM_SAMPLES}, got {audio_data_np.shape[0]}."
                 print(error_msg)
-                return chunk_id_str, None, error_msg
+                return None, error_msg
 
             input_tensor = torch.from_numpy(audio_data_np).unsqueeze(0) # Добавляем batch dim [1, NUM_SAMPLES]
             
-            score = self._predict_score_for_chunk_tensor(input_tensor)
-            # print(f"Предсказание для {chunk_key}: score={score:.4f}")
-            return chunk_id_str, score, None
+            score_value = self._predict_score_for_chunk_tensor(input_tensor)
+            print(f"LOG_SCORE: Chunk {chunk_key} (ID: {chunk_id_str}), Raw Score from model: {score_value}, Type: {type(score_value)}")
+            
+            # Округляем значение score до 4 знаков после запятой
+            score_value_rounded = round(score_value, 4)
+
+            prediction = audio_analyzer_pb2.AudioChunkPrediction(
+                chunk_id=chunk_id_str,
+                score=score_value_rounded, # Используем округленное значение
+                start_time_seconds=start_time,
+                end_time_seconds=end_time
+            )
+            return prediction, None
 
         except Exception as e:
-            error_msg = f"Ошибка обработки чанка {chunk_key}: {e}"
+            error_msg = f"Error processing chunk {chunk_key}: {e}"
             print(error_msg)
-            return chunk_id_str, None, error_msg
+            return None, error_msg
 
 
     # Это новый основной метод согласно README.md
@@ -159,8 +179,7 @@ class AudioAnalysisServicer(audio_analyzer_pb2_grpc.AudioAnalysisServicer): # И
             context.set_details(error_msg)
             return audio_analyzer_pb2.AnalyzeAudioResponse(error_message=error_msg)
 
-        # ИЗМЕНЕНО: тип predictions_map
-        predictions_map: Dict[str, float] = {}
+        predictions_list: List[audio_analyzer_pb2.AudioChunkPrediction] = []
         overall_error_message_parts = []
 
         try:
@@ -238,10 +257,10 @@ class AudioAnalysisServicer(audio_analyzer_pb2_grpc.AudioAnalysisServicer): # И
             # Убираем размерность канала -> [num_samples_total]
             signal = signal.squeeze(0) 
             total_samples = signal.shape[0]
-            num_chunks = (total_samples + NUM_SAMPLES - 1) // NUM_SAMPLES # Округление вверх
+            num_chunks_calculated = (total_samples + NUM_SAMPLES - 1) // NUM_SAMPLES # Округление вверх
 
-            if num_chunks == 0 and total_samples > 0: # если аудио короче одного чанка, но не пустое
-                num_chunks = 1
+            if num_chunks_calculated == 0 and total_samples > 0: # если аудио короче одного чанка, но не пустое
+                num_chunks_calculated = 1
             elif total_samples == 0:
                 error_msg = "Аудиофайл пуст или не содержит аудиоданных после предобработки."
                 print(error_msg)
@@ -250,106 +269,102 @@ class AudioAnalysisServicer(audio_analyzer_pb2_grpc.AudioAnalysisServicer): # И
                 return audio_analyzer_pb2.AnalyzeAudioResponse(error_message=error_msg)
 
 
-            print(f"Аудиофайл предобработан. Всего семплов: {total_samples}, будет чанков: {num_chunks}")
+            print(f"Аудиофайл предобработан. Всего семплов: {total_samples}, будет чанков: {num_chunks_calculated}")
 
+            # 3. Нарезка на чанки, сохранение в Redis и планирование обработки
+            # Используем ThreadPoolExecutor для параллельной обработки чанков из Redis
+            # Это может быть не самым лучшим решением для IO-bound операций с Redis, 
+            # но для CPU-bound инференса это может дать выигрыш.
+            # Альтернатива - asyncio с подходящим Redis клиентом, если весь стек асинхронный.
+
+            # Сохраняем чанки в Redis
             chunk_indices_to_process = []
-
-            # 2. Нарезка на чанки и сохранение в Redis
-            for i in range(num_chunks):
-                start_idx = i * NUM_SAMPLES
-                end_idx = start_idx + NUM_SAMPLES
-                current_chunk_tensor = signal[start_idx:end_idx]
+            for i in range(num_chunks_calculated):
+                start_sample = i * NUM_SAMPLES
+                end_sample = start_sample + NUM_SAMPLES
 
                 # Паддинг для последнего чанка, если он короче
-                if current_chunk_tensor.shape[0] < NUM_SAMPLES:
-                    pad_size = NUM_SAMPLES - current_chunk_tensor.shape[0]
-                    current_chunk_tensor = torch.nn.functional.pad(current_chunk_tensor, (0, pad_size))
-                
-                # Конвертация тензора чанка в байты (float32)
-                chunk_bytes_for_redis = current_chunk_tensor.numpy().astype(np.float32).tobytes()
-                # Используем internal_request_id_for_redis для ключей Redis
+                if end_sample > total_samples:
+                    chunk_signal_np = signal[start_sample:].numpy()
+                    padding_needed = NUM_SAMPLES - len(chunk_signal_np)
+                    if padding_needed > 0: # Только если действительно нужен паддинг
+                         chunk_signal_np = np.pad(chunk_signal_np, (0, padding_needed), 'constant')
+                else:
+                    chunk_signal_np = signal[start_sample:end_sample].numpy()
+
+                if chunk_signal_np.shape[0] != NUM_SAMPLES:
+                     # Этого не должно произойти с правильным паддингом/нарезкой, но на всякий случай
+                    print(f"Предупреждение: Чанк {i} после нарезки/паддинга имеет размер {chunk_signal_np.shape[0]}, ожидалось {NUM_SAMPLES}")
+                    # Можно пропустить этот чанк или вернуть ошибку
+                    overall_error_message_parts.append(f"Chunk {i} has wrong size after slicing/padding.")
+                    continue
+
                 chunk_key = f"{internal_request_id_for_redis}:chunk_{i}"
-                
                 try:
-                    self.redis_client.set(chunk_key, chunk_bytes_for_redis, ex=REDIS_CHUNK_EXPIRY_SECONDS)
+                    self.redis_client.set(chunk_key, chunk_signal_np.astype(np.float32).tobytes(), ex=REDIS_CHUNK_EXPIRY_SECONDS)
                     chunk_indices_to_process.append(i)
                 except redis.exceptions.RedisError as e:
-                    err_msg_part = f"Ошибка сохранения чанка {chunk_key} в Redis: {e}"
-                    print(err_msg_part)
-                    overall_error_message_parts.append(err_msg_part)
-                    # Если не удалось сохранить чанк, его не нужно добавлять в обработку
+                    error_msg_redis = f"Ошибка сохранения чанка {i} в Redis: {e}"
+                    print(error_msg_redis)
+                    overall_error_message_parts.append(error_msg_redis)
+                    # Если не удалось сохранить чанк, нет смысла его обрабатывать
             
-            if not chunk_indices_to_process and num_chunks > 0 : # Если были чанки, но ни один не сохранился
-                 error_msg_final = "; ".join(overall_error_message_parts) if overall_error_message_parts else "Failed to store any chunks in Redis."
+            if not chunk_indices_to_process: # Если не удалось сохранить ни одного чанка
+                 if not overall_error_message_parts: # Если и ошибок не было (например, пустой файл дал 0 чанков)
+                      overall_error_message_parts.append("No chunks were processed or saved to Redis.")
+                 final_error_msg = " | ".join(overall_error_message_parts)
                  context.set_code(grpc.StatusCode.INTERNAL)
-                 context.set_details(error_msg_final)
-                 return audio_analyzer_pb2.AnalyzeAudioResponse(error_message=error_msg_final)
+                 context.set_details(final_error_msg)
+                 return audio_analyzer_pb2.AnalyzeAudioResponse(error_message=final_error_msg)
 
 
-            # 3. Параллельная обработка чанков из Redis
-            # Используем ThreadPoolExecutor, который уже есть в grpc.server
-            # Для более гранулярного контроля можно создать свой
-            # server = grpc.server(futures.ThreadPoolExecutor(max_workers=10)) - этот пул для обработки входящих gRPC запросов
-            # Мы создадим новый для наших задач обработки чанков
-            with futures.ThreadPoolExecutor(max_workers=min(10, num_chunks if num_chunks > 0 else 1)) as executor:
-                # Future -> (request_id, chunk_idx)
-                future_to_task_params = {
-                    executor.submit(self._process_chunk_from_redis, internal_request_id_for_redis, idx): (internal_request_id_for_redis, idx)
-                    for idx in chunk_indices_to_process
-                }
+            # 4. Параллельная обработка чанков из Redis
+            # Результаты (предсказание, ошибка_сообщения)
+            results = [] # Список из Tuple[Optional[AudioChunkPrediction], Optional[str]]
 
-                for future in futures.as_completed(future_to_task_params):
-                    # req_id_done, chunk_idx_done = future_to_task_params[future]
-                    try:
-                        chunk_id_str, score_val, error_msg_chunk = future.result()
-                        if error_msg_chunk:
-                            overall_error_message_parts.append(f"Error for {chunk_id_str}: {error_msg_chunk}")
-                        if score_val is not None:
-                            predictions_map[chunk_id_str] = score_val
-                    except Exception as exc:
-                        # req_id_err, chunk_idx_err = future_to_task_params[future]
-                        # err_msg = f"Ошибка при обработке задачи для чанка {chunk_idx_err} запроса {req_id_err}: {exc}"
-                        # Вместо этого, будем использовать информацию из _process_chunk_from_redis
-                        # т.к. она более специфична. Если future.result() сам по себе вызвал исключение,
-                        # это будет более общая ошибка.
-                        params = future_to_task_params[future]
-                        err_msg_part = f"Непредвиденная ошибка в потоке для чанка {params[1]} запроса {params[0]}: {exc}"
-                        print(err_msg_part)
-                        overall_error_message_parts.append(err_msg_part)
+            # Простой последовательный вызов для начала, чтобы избежать сложностей с ThreadPoolExecutor
+            # и его влиянием на gRPC context/threads, если таковые имеются.
+            # Для реальной параллелизации, ThreadPoolExecutor или asyncio будут нужны.
+            for chunk_idx in chunk_indices_to_process:
+                prediction_obj, error_str = self._process_chunk_from_redis(internal_request_id_for_redis, chunk_idx)
+                results.append((prediction_obj, error_str))
+                # Опционально: удаляем чанк из Redis после обработки
+                # self.redis_client.delete(f"{internal_request_id_for_redis}:chunk_{chunk_idx}")
+
+
+            # Сбор результатов
+            for pred_obj, err_str in results:
+                if pred_obj:
+                    predictions_list.append(pred_obj)
+                if err_str:
+                    overall_error_message_parts.append(err_str)
             
-            # 4. Опциональная очистка чанков из Redis
-            # if chunk_indices_to_process: # Только если что-то было добавлено
-            #     keys_to_delete = [f"{request_id}:chunk_{i}" for i in chunk_indices_to_process]
-            #     try:
-            #         self.redis_client.delete(*keys_to_delete)
-            #     except redis.exceptions.RedisError as e:
-            #         print(f"Ошибка удаления чанков из Redis для {request_id}: {e}")
-            #         # Не критично для ответа клиенту, но стоит залогировать
-
-            final_error_message_str = "; ".join(overall_error_message_parts) if overall_error_message_parts else ""
-            
-            if not predictions_map and num_chunks > 0 and not final_error_message_str:
-                 final_error_message_str = "No chunk predictions could be made, though chunks were processed without explicit errors."
-            elif not predictions_map and num_chunks > 0 and final_error_message_str:
-                 # Ошибки уже есть, ничего не добавляем
-                 pass
+            # Финальное сообщение об ошибке
+            final_error_msg = ""
+            if overall_error_message_parts:
+                final_error_msg = " | ".join(overall_error_message_parts)
+                print(f"Обнаружены ошибки при обработке: {final_error_msg}")
+                # Не устанавливаем код ошибки здесь, если есть хотя бы частичные предсказания,
+                # но передаем error_message. Клиент должен будет это учесть.
+                # Если predictions_list пуст и есть ошибки, то это явная проблема.
+                if not predictions_list:
+                    context.set_code(grpc.StatusCode.INTERNAL) # или другой подходящий код
+                    context.set_details(final_error_msg)
+                    # Возвращаем ответ с ошибкой, но без predictions, если они пусты
+                    return audio_analyzer_pb2.AnalyzeAudioResponse(error_message=final_error_msg)
 
 
-            print(f"Обработка AnalyzeAudio для MinIO '{request.minio_bucket_name}/{request.minio_object_key}' завершена. Предсказаний: {len(predictions_map)}. Ошибки: '{final_error_message_str}'")
-            return audio_analyzer_pb2.AnalyzeAudioResponse(
-                predictions=predictions_map,
-                error_message=final_error_message_str
-            )
+            print(f"Анализ завершен для {internal_request_id_for_redis}. Предсказаний: {len(predictions_list)}. Ошибки: '{final_error_msg if final_error_msg else 'Нет'}'")
+            return audio_analyzer_pb2.AnalyzeAudioResponse(predictions=predictions_list, error_message=final_error_msg)
 
         except Exception as e:
-            # Глобальный обработчик ошибок для ProcessAudio
-            error_msg = f"Критическая ошибка в AnalyzeAudio для MinIO '{request.minio_bucket_name}/{request.minio_object_key}': {e}"
-            print(error_msg)
-            import traceback
-            traceback.print_exc() # Для детального дебага в логах сервера
+            # Глобальный обработчик ошибок для метода AnalyzeAudio
+            critical_error_msg = f"Критическая ошибка в AnalyzeAudio: {e}"
+            print(critical_error_msg)
             context.set_code(grpc.StatusCode.INTERNAL)
-            context.set_details(error_msg)
-            return audio_analyzer_pb2.AnalyzeAudioResponse(error_message=error_msg)
+            context.set_details(critical_error_msg)
+            # Убедимся, что возвращаем список предсказаний, даже если он пуст
+            return audio_analyzer_pb2.AnalyzeAudioResponse(predictions=predictions_list, error_message=critical_error_msg)
 
     # Старый метод PredictChunk больше не нужен в таком виде, так как его логика
     # инкапсулирована в _predict_score_for_chunk_tensor и _process_chunk_from_redis.
@@ -362,7 +377,14 @@ class AudioAnalysisServicer(audio_analyzer_pb2_grpc.AudioAnalysisServicer): # И
 
 def serve():
     """Запускает gRPC сервер."""
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10)) # Этот пул для gRPC вызовов
+    # Определяем максимальное количество воркеров для ThreadPoolExecutor
+    # Это значение может потребовать тюнинга в зависимости от сервера и характера задач
+    # Для CPU-bound задач (инференс модели) имеет смысл ставить близко к количеству CPU ядер
+    # Для IO-bound (работа с Redis/MinIO) можно больше, но здесь инференс доминирует.
+    num_workers = os.cpu_count() or 1 
+    print(f"Запуск gRPC сервера с {num_workers} воркерами...")
+    
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=num_workers))
 
     # Создаем экземпляр нашего сервиса (модель загрузится в __init__)
     try:
@@ -375,19 +397,21 @@ def serve():
     # Например, add_AudioDetectionServicer_to_server
     audio_analyzer_pb2_grpc.add_AudioAnalysisServicer_to_server(servicer, server) # ИЗМЕНЕНО: функция добавления
 
-    print(f"Запуск gRPC сервера AudioAnalysis на {_SERVER_ADDRESS}...")
-    server.add_insecure_port(_SERVER_ADDRESS)
+    # Изменяем здесь, чтобы слушать на всех IPv4 интерфейсах
+    listen_addr = '0.0.0.0:50052'
+    server.add_insecure_port(listen_addr)
+    logger.info(f"Сервер слушает на {listen_addr}")
     server.start()
-    print("Сервер запущен. Нажмите Ctrl+C для остановки.")
+    logger.info("Сервер успешно запущен.")
     try:
         while True:
             time.sleep(_ONE_DAY_IN_SECONDS)
     except KeyboardInterrupt:
-        print("Остановка сервера...")
-        server.stop(grace=None) # Даем время на завершение текущих запросов
-        print("Сервер остановлен.")
+        logger.info("Остановка сервера...")
+        server.stop(0)
+        logger.info("Сервер остановлен.")
 
 if __name__ == '__main__':
-    # Перед запуском сервера, убедитесь, что Redis доступен,
-    # и модель с чекпоинтом находятся в ожидаемых местах.
+    # Конфигурация basicConfig должна быть вызвана до первого использования logger
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     serve()

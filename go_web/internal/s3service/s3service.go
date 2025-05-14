@@ -2,6 +2,7 @@ package s3service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"go.uber.org/zap"
 )
 
@@ -71,6 +73,36 @@ func NewS3Service(cfg config.S3Config, appLogger *logger.Logger) (*S3Service, er
 		logger:     appLogger,
 		endpoint:   cfg.Endpoint,
 	}, nil
+}
+
+// EnsureBucketExists checks if the configured S3 bucket exists, and creates it if not.
+// It uses the s.bucketName field which is set during NewS3Service.
+func (s *S3Service) EnsureBucketExists(ctx context.Context) error {
+	s.logger.Info("Checking if S3 bucket exists", zap.String("bucket", s.bucketName))
+	_, err := s.client.HeadBucket(ctx, &s3.HeadBucketInput{
+		Bucket: aws.String(s.bucketName),
+	})
+
+	if err != nil {
+		var nsbErr *types.NoSuchBucket
+		if errors.As(err, &nsbErr) {
+			s.logger.Info("Bucket does not exist, attempting to create it.", zap.String("bucket", s.bucketName))
+			_, createErr := s.client.CreateBucket(ctx, &s3.CreateBucketInput{
+				Bucket: aws.String(s.bucketName),
+			})
+			if createErr != nil {
+				s.logger.Error("Failed to create bucket", zap.String("bucket", s.bucketName), zap.Error(createErr))
+				return fmt.Errorf("failed to create bucket %s: %w", s.bucketName, createErr)
+			}
+			s.logger.Info("Bucket created successfully", zap.String("bucket", s.bucketName))
+			return nil
+		}
+		s.logger.Error("Failed to check bucket existence due to an unexpected error", zap.String("bucket", s.bucketName), zap.Error(err))
+		return fmt.Errorf("failed to check bucket %s: %w", s.bucketName, err)
+	}
+
+	s.logger.Info("S3 bucket already exists.", zap.String("bucket", s.bucketName))
+	return nil
 }
 
 // UploadFile uploads a file to the S3 bucket.

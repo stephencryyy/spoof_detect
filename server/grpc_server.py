@@ -317,27 +317,56 @@ class AudioAnalysisServicer(audio_analyzer_pb2_grpc.AudioAnalysisServicer): # И
                  context.set_details(final_error_msg)
                  return audio_analyzer_pb2.AnalyzeAudioResponse(error_message=final_error_msg)
 
-
             # 4. Параллельная обработка чанков из Redis
-            # Результаты (предсказание, ошибка_сообщения)
             results = [] # Список из Tuple[Optional[AudioChunkPrediction], Optional[str]]
 
-            # Простой последовательный вызов для начала, чтобы избежать сложностей с ThreadPoolExecutor
-            # и его влиянием на gRPC context/threads, если таковые имеются.
-            # Для реальной параллелизации, ThreadPoolExecutor или asyncio будут нужны.
-            for chunk_idx in chunk_indices_to_process:
-                prediction_obj, error_str = self._process_chunk_from_redis(internal_request_id_for_redis, chunk_idx)
-                results.append((prediction_obj, error_str))
-                # Опционально: удаляем чанк из Redis после обработки
-                # self.redis_client.delete(f"{internal_request_id_for_redis}:chunk_{chunk_idx}")
+            # Используем ThreadPoolExecutor для параллельной обработки
+            # Оптимальное число воркеров зависит от системы и характера нагрузки.
+            # Если модель на GPU, то CPU-воркеров может быть немного.
+            # Если модель на CPU, то число воркеров должно быть соизмеримо с CPU ядрами.
+            # Учитываем, что gRPC сервер сам использует ThreadPoolExecutor.
+            num_workers = min(8, (os.cpu_count() or 4)) # Ограничим 8 воркерами или числом ядер (минимум 4)
+            # print(f"Используется ThreadPoolExecutor с {num_workers} воркерами для обработки чанков.") # Можно заменить на logger.debug
+            logger.info(f"Using ThreadPoolExecutor with {num_workers} workers for chunk processing for request {internal_request_id_for_redis}")
 
-
+            with futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+                # Отправляем задачи на выполнение
+                future_to_chunk_idx = {
+                    executor.submit(self._process_chunk_from_redis, internal_request_id_for_redis, chunk_idx): chunk_idx 
+                    for chunk_idx in chunk_indices_to_process
+                }
+                
+                for future in futures.as_completed(future_to_chunk_idx):
+                    chunk_idx_completed = future_to_chunk_idx[future]
+                    try:
+                        prediction_obj, error_str = future.result() # Получаем результат выполнения
+                        results.append((prediction_obj, error_str))
+                        if error_str:
+                             logger.warning(f"Error processing chunk {chunk_idx_completed} for request {internal_request_id_for_redis}: {error_str}")
+                        # Опционально: удаляем чанк из Redis после успешной обработки или всегда
+                        # chunk_key_to_delete = f"{internal_request_id_for_redis}:chunk_{chunk_idx_completed}"
+                        # try:
+                        #    self.redis_client.delete(chunk_key_to_delete)
+                        # except redis.exceptions.RedisError as e_del:
+                        #    logger.warning(f"Error deleting chunk {chunk_key_to_delete} from Redis: {e_del}")
+                    except Exception as exc:
+                        error_msg_future = f"Исключение при обработке чанка {chunk_idx_completed} в потоке: {exc}"
+                        print(error_msg_future) # Оставляем print для быстрой отладки, но также логируем
+                        logger.error(f"Exception while processing chunk {chunk_idx_completed} in thread for request {internal_request_id_for_redis}", exc_info=True)
+                        results.append((None, error_msg_future)) # Добавляем ошибку в результаты
+            
             # Сбор результатов
             for pred_obj, err_str in results:
                 if pred_obj:
                     predictions_list.append(pred_obj)
                 if err_str:
-                    overall_error_message_parts.append(err_str)
+                    if err_str not in overall_error_message_parts: # Избегаем дублирования, если ошибка уже была добавлена
+                         overall_error_message_parts.append(err_str)
+            
+            # Опционально: Сортируем predictions_list по времени начала, если это требуется клиентом
+            # Это важно, если порядок чанков имеет значение для клиента.
+            if predictions_list:
+                predictions_list.sort(key=lambda p: p.start_time_seconds)
             
             # Финальное сообщение об ошибке
             final_error_msg = ""
@@ -377,41 +406,77 @@ class AudioAnalysisServicer(audio_analyzer_pb2_grpc.AudioAnalysisServicer): # И
 
 def serve():
     """Запускает gRPC сервер."""
-    # Определяем максимальное количество воркеров для ThreadPoolExecutor
-    # Это значение может потребовать тюнинга в зависимости от сервера и характера задач
-    # Для CPU-bound задач (инференс модели) имеет смысл ставить близко к количеству CPU ядер
-    # Для IO-bound (работа с Redis/MinIO) можно больше, но здесь инференс доминирует.
-    num_workers = os.cpu_count() or 1 
-    print(f"Запуск gRPC сервера с {num_workers} воркерами...")
-    
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=num_workers))
-
-    # Создаем экземпляр нашего сервиса (модель загрузится в __init__)
+    # Инициализация сервисера для проверки загрузки модели и других зависимостей.
+    # Логгер уже должен быть настроен к этому моменту (в if __name__ == '__main__').
     try:
-        servicer = AudioAnalysisServicer() # Используем новое имя класса
+        logger.info("Попытка инициализации AudioAnalysisServicer...")
+        servicer_instance = AudioAnalysisServicer() 
+        logger.info("AudioAnalysisServicer успешно инициализирован.")
     except RuntimeError as e:
-        print(f"Критическая ошибка при инициализации сервиса: {e}")
+        print(f"КРИТИЧЕСКАЯ ОШИБКА при инициализации AudioAnalysisServicer (RuntimeError): {e}")
+        logger.critical(f"КРИТИЧЕСКАЯ ОШИБКА при инициализации AudioAnalysisServicer (RuntimeError): {e}", exc_info=True)
+        print("Сервер НЕ БУДЕТ ЗАПУЩЕН.")
         return 
+    except Exception as e: 
+        print(f"НЕОЖИДАННАЯ КРИТИЧЕСКАЯ ОШИБКА при инициализации AudioAnalysisServicer: {e}")
+        logger.critical(f"НЕОЖИДАННАЯ КРИТИЧЕСКАЯ ОШИБКА при инициализации AudioAnalysisServicer: {e}", exc_info=True)
+        print("Сервер НЕ БУДЕТ ЗАПУЩЕН.")
+        return
 
-    # Убедитесь, что эта функция соответствует вашему xxx_pb2_grpc.py
-    # Например, add_AudioDetectionServicer_to_server
-    audio_analyzer_pb2_grpc.add_AudioAnalysisServicer_to_server(servicer, server) # ИЗМЕНЕНО: функция добавления
-
-    # Изменяем здесь, чтобы слушать на всех IPv4 интерфейсах
-    listen_addr = '0.0.0.0:50052'
-    server.add_insecure_port(listen_addr)
-    logger.info(f"Сервер слушает на {listen_addr}")
+    grpc_server_workers = int(os.getenv('GRPC_SERVER_WORKERS', '10'))
+    logger.info(f"Запуск gRPC сервера с {grpc_server_workers} воркерами для обработки запросов.")
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=grpc_server_workers))
+    
+    audio_analyzer_pb2_grpc.add_AudioAnalysisServicer_to_server(
+        servicer_instance, server # Используем уже созданный и проверенный экземпляр
+    )
+    
+    server.add_insecure_port(_SERVER_ADDRESS) # Используем константу _SERVER_ADDRESS
+    print(f"Сервер gRPC слушает на {_SERVER_ADDRESS}")
+    logger.info(f"Сервер gRPC слушает на {_SERVER_ADDRESS}")
+    
     server.start()
-    logger.info("Сервер успешно запущен.")
+    print("Сервер gRPC успешно запущен.")
+    logger.info("Сервер gRPC успешно запущен.")
+    
     try:
         while True:
             time.sleep(_ONE_DAY_IN_SECONDS)
     except KeyboardInterrupt:
-        logger.info("Остановка сервера...")
-        server.stop(0)
-        logger.info("Сервер остановлен.")
+        print("Получен сигнал KeyboardInterrupt. Остановка сервера...")
+        logger.info("Получен сигнал KeyboardInterrupt. Остановка сервера...")
+    finally:
+        shutdown_event = server.stop(grace=5) # Даем 5 секунд на graceful shutdown
+        print("Ожидание завершения работы сервера...")
+        logger.info("Ожидание завершения работы сервера...")
+        shutdown_event.wait() # Блокируемся до полной остановки
+        print("Сервер gRPC полностью остановлен.")
+        logger.info("Сервер gRPC полностью остановлен.")
 
 if __name__ == '__main__':
-    # Конфигурация basicConfig должна быть вызвана до первого использования logger
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    # Настройка логирования должна быть в самом начале.
+    log_level_str = os.getenv('LOG_LEVEL', 'INFO').upper()
+    log_format = '%(asctime)s - %(name)s - %(levelname)s - %(process)d - %(threadName)s - %(message)s'
+    
+    # Убедимся, что уровень логирования корректен
+    numeric_level = getattr(logging, log_level_str, None)
+    if not isinstance(numeric_level, int):
+        print(f"Неверный уровень логирования: {log_level_str}. Используется INFO.")
+        numeric_level = logging.INFO
+
+    logging.basicConfig(
+        level=numeric_level, 
+        format=log_format,
+        handlers=[
+            logging.StreamHandler() # Вывод в stderr по умолчанию
+        ]
+    )
+    # logger = logging.getLogger(__name__) # Получаем логгер для текущего модуля, если нужно специфичное имя
+
+    # Пример установки уровня для других логгеров, если они слишком "шумные"
+    # logging.getLogger('minio').setLevel(logging.WARNING)
+    # logging.getLogger('urllib3').setLevel(logging.WARNING) # MinIO использует urllib3
+    # logging.getLogger('redis').setLevel(logging.WARNING)
+
+    logger.info(f"Запуск gRPC сервера из __main__ с уровнем логирования {log_level_str}...")
     serve()

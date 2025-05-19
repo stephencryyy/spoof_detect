@@ -26,9 +26,10 @@ const (
 
 // Allowed audio file extensions (case-insensitive)
 var allowedAudioExtensions = map[string]bool{
-	".wav": true,
-	".mp3": true,
-	".ogg": true,
+	".wav":  true,
+	".mp3":  true,
+	".ogg":  true,
+	".webm": true,
 }
 
 // AudioAnalysisResult represents a single chunk's analysis result for the API response.
@@ -152,7 +153,7 @@ func (h *AudioHandler) UploadAudioFile(c *gin.Context) {
 		UploadedAt:       time.Now(),
 	}
 
-	if err := h.audioRepo.SaveAudioFile(c.Request.Context(), audioFileMetadata); err != nil {
+	if saveErr := h.audioRepo.SaveAudioFile(c.Request.Context(), audioFileMetadata); saveErr != nil {
 		h.logger.Error("Failed to save audio metadata to DB", zap.String("s3_key", s3Key), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save audio file metadata"})
 		return
@@ -173,13 +174,13 @@ func (h *AudioHandler) UploadAudioFile(c *gin.Context) {
 	apiResponse := UploadAndAnalyzeAudioResponse{
 		FileID:  audioFileMetadata.ID,
 		S3Key:   s3Key,
-		Message: "Audio file uploaded. Analysis result follows.",
+		Message: "Аудиофайл был успешно загружен. Начинаем анализ...",
 		FileURL: fileURL,
 	}
 
 	if err != nil {
 		h.logger.Error("Failed to call Python gRPC audio analysis service", zap.String("s3_key", s3Key), zap.Error(err))
-		apiResponse.Message = "Audio file uploaded, but analysis failed to start."
+		apiResponse.Message = "Аудиофайл был загружен, но возникла ошибка при попытке анализа."
 		apiResponse.AnalysisError = "gRPC call error: " + err.Error()
 		// It's important to still return StatusCreated or StatusOK because the file upload part was successful.
 		// The client can check the AnalysisError field.
@@ -192,7 +193,7 @@ func (h *AudioHandler) UploadAudioFile(c *gin.Context) {
 			zap.String("s3_key", s3Key),
 			zap.String("python_error", analysisResp.ErrorMessage))
 		apiResponse.AnalysisError = analysisResp.ErrorMessage
-		apiResponse.Message = "Audio file uploaded. Analysis completed with errors."
+		apiResponse.Message = "Аудиофайл был загружен, но произошла ошибка при анализе."
 	}
 
 	if len(analysisResp.Predictions) > 0 {
@@ -206,7 +207,7 @@ func (h *AudioHandler) UploadAudioFile(c *gin.Context) {
 			}
 		}
 		if apiResponse.AnalysisError == "" { // If there was no major gRPC or Python error
-			apiResponse.Message = "Audio file uploaded and analyzed successfully."
+			apiResponse.Message = "Аудиофайл был успешно проанализирован."
 		}
 	}
 

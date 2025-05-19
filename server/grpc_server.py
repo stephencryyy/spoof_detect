@@ -235,15 +235,59 @@ class AudioAnalysisServicer(audio_analyzer_pb2_grpc.AudioAnalysisServicer): # И
             print(f"Файл из MinIO успешно загружен, размер: {len(audio_content_bytes)} байт.")
 
             # 2. Загрузка и предобработка аудио (теперь из audio_content_bytes)
-            audio_stream = io.BytesIO(audio_content_bytes)
+            signal = None 
+            sr = None     
+            # overall_error_message_parts уже определен в начале метода AnalyzeAudio.
+            loading_attempt_errors = [] # Локальный список ошибок для этой сессии загрузки
+
             try:
-                signal, sr = torchaudio.load(audio_stream) # формат будет определен автоматически
-            except Exception as e:
-                error_msg = f"Ошибка загрузки аудио: {e}"
-                print(error_msg)
-                context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
-                context.set_details(error_msg)
-                return audio_analyzer_pb2.AnalyzeAudioResponse(error_message=error_msg)
+                for format_to_try in ["wav", "mp3", "flac", "webm"]:
+                    # Создаем НОВЫЙ поток для КАЖДОЙ попытки формата
+                    audio_stream_for_format = io.BytesIO(audio_content_bytes)
+                    try:
+                        signal, sr = torchaudio.load(audio_stream_for_format, format=format_to_try)
+                        print(f"Файл успешно загружен в формате: {format_to_try}") 
+                        loading_attempt_errors.clear() # Успех, очищаем ошибки этой сессии
+                        break # Выходим из цикла, так как аудио успешно загружено
+                    except Exception as e:
+                        error_msg_format = f"Ошибка при попытке загрузки файла в формате {format_to_try}: {e}"
+                        print(error_msg_format)
+                        loading_attempt_errors.append(error_msg_format)
+                        signal, sr = None, None # Сбрасываем, так как этот формат не удался
+                        # audio_stream_for_format закроется автоматически сборщиком мусора
+                        continue # Переходим к следующему формату
+                
+                if signal is None or sr is None: # Если ни один формат не подошел
+                    overall_error_message_parts.extend(loading_attempt_errors) 
+                    error_details_str = "; ".join(filter(None, overall_error_message_parts)) # filter(None, ...) для удаления пустых строк, если они есть
+                    final_error_msg = f"Не удалось загрузить аудиофайл ни в одном из поддерживаемых форматов (wav, mp3, flac, webm). Детали: {error_details_str if error_details_str else 'Конкретных ошибок при попытках загрузки не зарегистрировано.'}"
+                    print(final_error_msg)
+                    context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+                    context.set_details(final_error_msg)
+                    return audio_analyzer_pb2.AnalyzeAudioResponse(error_message=final_error_msg)
+            
+            except Exception as e_outer: # Ловим другие неожиданные ошибки в этом блоке
+                if loading_attempt_errors: # Добавляем ошибки попыток загрузки, если они были до этого исключения
+                    overall_error_message_parts.extend(loading_attempt_errors)
+                overall_error_message_parts.append(f"Неожиданная общая ошибка на этапе загрузки аудио: {e_outer}")
+                final_error_msg_outer = f"Общая ошибка при обработке аудио для загрузки. Детали: {'; '.join(filter(None, overall_error_message_parts))}"
+                print(final_error_msg_outer)
+                context.set_code(grpc.StatusCode.INTERNAL) 
+                context.set_details(final_error_msg_outer)
+                return audio_analyzer_pb2.AnalyzeAudioResponse(error_message=final_error_msg_outer)
+
+            # Защитная проверка: если signal или sr все еще None, это указывает на проблему в логике выше.
+            if signal is None or sr is None:
+                 # Эта ситуация не должна возникать, если предыдущая логика возвращает ошибку корректно.
+                 critical_fallback_msg = "Критическая ошибка: аудио не было загружено (signal или sr is None) после блока попыток загрузки, несмотря на проверки."
+                 if overall_error_message_parts:
+                     critical_fallback_msg += " Собранные ошибки: " + "; ".join(filter(None, overall_error_message_parts))
+                 elif loading_attempt_errors: # Если overall_error_message_parts пуст, но были локальные ошибки
+                     critical_fallback_msg += " Локальные ошибки загрузки: " + "; ".join(filter(None, loading_attempt_errors))
+                 print(critical_fallback_msg)
+                 context.set_code(grpc.StatusCode.INTERNAL)
+                 context.set_details(critical_fallback_msg)
+                 return audio_analyzer_pb2.AnalyzeAudioResponse(error_message=critical_fallback_msg)
 
             # 1.1 Ресемплинг
             if sr != SAMPLE_RATE:

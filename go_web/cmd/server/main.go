@@ -52,7 +52,7 @@ func main() {
 		appLogger.Fatal("Failed to initialize S3 service", zap.Error(err))
 	}
 	// Ensure S3 bucket exists or create it
-	if err := s3Svc.EnsureBucketExists(context.Background()); err != nil { // Используем context.Background() для инициализации
+	if bucketErr := s3Svc.EnsureBucketExists(context.Background()); bucketErr != nil { // Using context.Background() for initialization
 		appLogger.Fatal("Failed to ensure S3 bucket exists", zap.String("bucket", cfg.S3.BucketName), zap.Error(err))
 	}
 

@@ -72,22 +72,7 @@ export default function Home() {
               </Link>
             </div>
           </div>
-        )}
-
-        {isLoggedIn && !isCheckingAuth && (
-          <div id="analysis-results" className="w-full max-w-4xl mt-8 hidden">
-            <div className="bg-white p-6 rounded-lg shadow-md border border-purple-100 mb-6">
-              <h3 className="text-xl font-bold mb-4 text-gray-800">Результаты анализа</h3>
-
-              <div id="analysis-summary-container"></div>
-
-              <div className="mt-6">
-                <h4 className="font-medium text-gray-700 mb-2">Прослушать подозрительные секции:</h4>
-                <div id="suspicious-sections-container" className="space-y-3"></div>
-              </div>
-            </div>
-          </div>
-        )}
+        )} 
 
         <InfoSection />
       </div>

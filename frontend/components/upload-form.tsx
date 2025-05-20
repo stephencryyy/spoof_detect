@@ -47,6 +47,8 @@ export function UploadForm() {
   const [recordingError, setRecordingError] = useState<string | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const [isDraggingOver, setIsDraggingOver] = useState(false); // Новое состояние для отслеживания перетаскивания
+  const [analysisDone, setAnalysisDone] = useState(false); // Новый флаг для отслеживания завершения анализа
 
   useEffect(() => {
     const currentBlobUrl = localFileBlobUrl;
@@ -246,7 +248,7 @@ export function UploadForm() {
     setError(null);
     setSuspiciousSections([]);
     setAnalysisResultsApi(null);
-    // setUploadResponse(null); // Не сбрасываем здесь, так как он будет перезаписан ответом от uploadAudio
+    setAnalysisDone(false); // Сброс перед анализом
 
     try {
       const data: UploadAudioResponse = await uploadAudio(file, token);
@@ -307,10 +309,12 @@ export function UploadForm() {
         analysisResultsDiv.classList.remove("hidden");
       }
 
+      setAnalysisDone(true); // Анализ завершен успешно или с ошибкой
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Произошла непредвиденная ошибка при анализе";
       setError(errorMessage);
       setUploadResponse({ message: "", s3_key: "", file_id: "", error: errorMessage });
+      setAnalysisDone(true); // Анализ завершен с ошибкой
     } finally {
       setIsAnalyzing(false);
     }
@@ -368,6 +372,7 @@ export function UploadForm() {
     }
     mediaRecorderRef.current = null;
     audioChunksRef.current = [];
+    setAnalysisDone(false); // Сбросить флаг при выборе нового файла
   };
 
   const handlePlayRequest = (playerKeyToActivate: string | null) => {
@@ -423,10 +428,21 @@ export function UploadForm() {
               {/* Dashed border area - now a label for file input */}
               <label
                 htmlFor="dropzone-file-input"
-                className="flex flex-col items-center justify-center w-full h-48 border-2 border-gray-300 border-dashed rounded-lg cursor-pointer bg-gray-50 hover:bg-gray-100 dark:border-gray-600 dark:hover:border-gray-500 dark:bg-gray-700 dark:hover:bg-gray-600 transition-colors duration-150 ease-in-out mb-4 p-4"
+                className={`flex flex-col items-center justify-center w-full h-48 border-2 border-gray-300 border-dashed rounded-lg cursor-pointer bg-gray-50 hover:bg-gray-100 dark:border-gray-600 dark:hover:border-gray-500 dark:bg-gray-700 dark:hover:bg-gray-600 transition-colors duration-150 ease-in-out mb-4 p-4 ${
+                  isDraggingOver ? 'bg-purple-100 border-purple-400' : 'bg-gray-50 hover:bg-gray-100'
+                }`}
+                onDragEnter={(e) => {
+                  e.preventDefault();
+                  setIsDraggingOver(true);
+                }}
+                onDragLeave={(e) => {
+                  e.preventDefault();
+                  setIsDraggingOver(false);
+                }}
                 onDragOver={(e) => e.preventDefault()} 
                 onDrop={(e) => {
                   e.preventDefault();
+                  setIsDraggingOver(false); // Сбрасываем состояние после броска
                   if (e.dataTransfer.files && e.dataTransfer.files[0]) {
                     const droppedFile = e.dataTransfer.files[0];
                     const syntheticEvent = {
@@ -531,19 +547,21 @@ export function UploadForm() {
                   onProgressUpdate={handleProgressUpdate}
                 />
               )}
-              
-              <Button
-                onClick={handleAnalyze}
-                disabled={isAnalyzing || !file }
-                className="w-full bg-[#6a50d3] hover:bg-[#5f43cc] text-white py-3 rounded-lg text-lg font-semibold flex items-center justify-center space-x-2 transition-all duration-150 ease-in-out disabled:opacity-70"
-              >
-                {isAnalyzing ? (
-                  <Loader2 className="h-6 w-6 animate-spin" />
-                ) : (
-                  <Upload className="h-6 w-6" />
-                )}
-                <span>{isAnalyzing ? "Анализируем..." : "Анализировать"}</span>
-              </Button>
+              {/* Кнопка Анализировать показывается только если анализ не был завершен */}
+              {!analysisDone && (
+                <Button
+                  onClick={handleAnalyze}
+                  disabled={isAnalyzing || !file }
+                  className="w-full bg-[#6a50d3] hover:bg-[#5f43cc] text-white py-3 rounded-lg text-lg font-semibold flex items-center justify-center space-x-2 transition-all duration-150 ease-in-out disabled:opacity-70"
+                >
+                  {isAnalyzing ? (
+                    <Loader2 className="h-6 w-6 animate-spin" />
+                  ) : (
+                    <Upload className="h-6 w-6" />
+                  )}
+                  <span>{isAnalyzing ? "Анализируем..." : "Анализировать"}</span>
+                </Button>
+              )}
             </div>
           )}
 

@@ -43,6 +43,14 @@ export function UploadForm() {
   const [isDraggingOver, setIsDraggingOver] = useState(false); // Новое состояние для отслеживания перетаскивания
   const [analysisDone, setAnalysisDone] = useState(false); // Новый флаг для отслеживания завершения анализа
 
+  // Для анимации "веревки"
+  const [stringAmplitude, setStringAmplitude] = useState(0);
+  const [smoothedAmplitude, setSmoothedAmplitude] = useState(0);
+  const animationFrameRef = useRef<number | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+
   useEffect(() => {
     const currentBlobUrl = localFileBlobUrl;
     return () => {
@@ -103,6 +111,52 @@ export function UploadForm() {
       setAudioUrl(null);
       setShowWaveform(false);
     }
+  };
+
+  // Функция для старта анимации веревки
+  const startStringAnimation = (stream: MediaStream) => {
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+    }
+    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    audioContextRef.current = audioContext;
+    const analyser = audioContext.createAnalyser();
+    analyser.fftSize = 256;
+    analyserRef.current = analyser;
+    const source = audioContext.createMediaStreamSource(stream);
+    sourceRef.current = source;
+    source.connect(analyser);
+    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+    const animate = () => {
+      analyser.getByteTimeDomainData(dataArray);
+      let min = 255, max = 0;
+      for (let i = 0; i < dataArray.length; i++) {
+        if (dataArray[i] < min) min = dataArray[i];
+        if (dataArray[i] > max) max = dataArray[i];
+      }
+      const amplitude = (max - min) / 255;
+      setStringAmplitude(amplitude);
+      // Плавное сглаживание (инерция "веревки")
+      setSmoothedAmplitude(prev => prev + (amplitude - prev) * 0.07); // Было 0.15, стало 0.07 для большей плавности
+      animationFrameRef.current = requestAnimationFrame(animate);
+    };
+    animate();
+  };
+
+  const stopStringAnimation = () => {
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
+    analyserRef.current = null;
+    sourceRef.current = null;
+    setStringAmplitude(0);
+    setSmoothedAmplitude(0);
   };
 
   const handleStartRecording = async () => {
@@ -176,10 +230,12 @@ export function UploadForm() {
           }
           
           stream.getTracks().forEach(track => track.stop());
+          stopStringAnimation(); // Остановить анимацию после записи
         };
 
         mediaRecorderRef.current.start();
         setIsRecording(true);
+        startStringAnimation(stream); // Запуск анимации струны
       } catch (err) {
         console.error("Error accessing microphone:", err);
         const errorMessage = err instanceof Error ? err.message : "Неизвестная ошибка микрофона";
@@ -195,6 +251,7 @@ export function UploadForm() {
     if (mediaRecorderRef.current && isRecording) {
       mediaRecorderRef.current.stop();
       setIsRecording(false);
+      stopStringAnimation(); // Остановить анимацию при остановке
     }
   };
 
@@ -408,7 +465,7 @@ export function UploadForm() {
 
           {!file && !isRecording && (
             <div className="flex flex-col items-center w-full max-w-2xl mx-auto p-4">
-              {/* Dashed border area - now a label for file input */}
+              {/* Блок выбора файла с пунктирной рамкой */}
               <label
                 htmlFor="dropzone-file-input"
                 className={`flex flex-col items-center justify-center w-full h-48 border-2 border-gray-300 border-dashed rounded-lg cursor-pointer bg-gray-50 hover:bg-gray-100 dark:border-gray-600 dark:hover:border-gray-500 dark:bg-gray-700 dark:hover:bg-gray-600 transition-colors duration-150 ease-in-out mb-4 p-4 ${
@@ -425,7 +482,7 @@ export function UploadForm() {
                 onDragOver={(e) => e.preventDefault()} 
                 onDrop={(e) => {
                   e.preventDefault();
-                  setIsDraggingOver(false); // Сбрасываем состояние после броска
+                  setIsDraggingOver(false);
                   if (e.dataTransfer.files && e.dataTransfer.files[0]) {
                     const droppedFile = e.dataTransfer.files[0];
                     const syntheticEvent = {
@@ -486,10 +543,51 @@ export function UploadForm() {
           )}
           
           {isRecording && (
-            <div className="w-full flex flex-col items-center space-y-4 p-8 border-2 border-dashed border-green-300 rounded-lg">
-                <div className="flex items-center justify-center text-green-600 animate-pulse">
+            <div className="w-full flex flex-col items-center space-y-4 p-0" style={{marginTop: 0}}>
+                <div className="flex flex-col items-center justify-center text-green-600 animate-pulse w-full">
                   <Mic className="w-8 h-8 mr-2" />
                   <span className="text-lg font-semibold">Идет запись...</span>
+                  {/* Анимация веревок в стиле блока вейвформы */}
+                  <div className="w-full max-w-[95%] mx-auto bg-gray-50 p-4 rounded-lg border border-gray-100">
+                    <svg width="1000" height="100" viewBox="0 0 1000 100" style={{display:'block', width:'100%', height:'100px'}}>
+                      {[0,1,2,3,4].map((idx) => {
+                        let ampBase = [1, 0.8, 0.6, 0.45, 0.3][idx];
+                        if (idx === 0 || idx === 3) ampBase *= 2;
+                        if (idx === 4) ampBase /= 2;
+                        let ampJitter = 1;
+                        if (smoothedAmplitude >= 0.03) {
+                          ampJitter = 1 + Math.sin(idx * 1.7 + Date.now() / (1200 + idx * 200)) * 0.25 + idx * 0.07;
+                        }
+                        const color = '#6a50d3'; // Цвет как у вейвформы
+                        const phase = idx * Math.PI / 3.5;
+                        const width = 1000;
+                        const height = 100;
+                        const segments = 120;
+                        const baseY = height / 2;
+                        const amp = 8 + 180 * smoothedAmplitude * ampBase * ampJitter;
+                        const effectiveAmp = smoothedAmplitude < 0.03 ? 0 : amp;
+                        const points = [];
+                        for (let i = 0; i <= segments; i++) {
+                          const x = (width / segments) * i;
+                          const direction = idx % 2 === 0 ? 1 : -1;
+                          const t = Date.now() / (700 - idx * 80) + i * 0.32 * direction + phase;
+                          const y = baseY + Math.sin(t) * effectiveAmp;
+                          points.push(`${x},${y.toFixed(1)}`);
+                        }
+                        return (
+                          <polyline
+                            key={idx}
+                            fill="none"
+                            stroke={color}
+                            strokeWidth="1.2"
+                            strokeLinecap="round"
+                            opacity={0.7 - idx * 0.12}
+                            points={points.join(' ')}
+                          />
+                        );
+                      })}
+                    </svg>
+                  </div>
                 </div>
                 <Button
                     onClick={handleStopRecording}

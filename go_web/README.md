@@ -70,13 +70,7 @@ This guide explains how to set up and run the Go REST API, PostgreSQL database, 
         ```
     *   Wait for the containers to start. You can check their status with `docker ps`.
 
-4.  **Create MinIO Bucket (One-time setup):**
-    *   Open your web browser and navigate to the MinIO console URL (usually `http://localhost:9001` based on the default `MINIO_CONSOLE_PORT`).
-    *   Log in using the `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY` you set in the `.env` file.
-    *   Navigate to the "Buckets" section.
-    *   Create a new bucket with the exact name you specified for `S3_BUCKET_NAME` in your `.env` file.
-
-5.  **Verify Services:**
+4.  **Verify Services:**
     *   **Go API:** Should be accessible at `http://localhost:<GO_APP_PORT>` (e.g., `http://localhost:8080`). Try accessing the `/ping` endpoint:
         ```bash
         curl http://localhost:8080/ping 
@@ -85,7 +79,7 @@ This guide explains how to set up and run the Go REST API, PostgreSQL database, 
     *   **PostgreSQL:** The Go API should connect automatically. You can check logs (`docker-compose logs postgres_db_auth`) or connect using a DB client if needed.
     *   **MinIO:** Accessible via the console (`http://localhost:9001`) and the API endpoint (`http://localhost:9000`).
 
-6.  **Testing the API:**
+5.  **Testing the API:**
     *   Use `curl` or a tool like Postman to test the API endpoints:
         *   `POST /api/v1/users/register`
         *   `POST /api/v1/users/login` (to get a JWT token)
@@ -120,4 +114,4 @@ This guide explains how to set up and run the Go REST API, PostgreSQL database, 
     docker exec -it <container_name> <command>
     # e.g., docker exec -it postgres_db_auth psql -U youruser -d yourdbname
     # e.g., docker exec -it go_auth_service /bin/sh
-    ``` 
+    ```

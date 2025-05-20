@@ -337,13 +337,16 @@ export function AudioWaveform({
                 }
               }
 
+              // Ограничиваем конец сегмента длительностью аудио
+              const end = Math.min(section.end, duration);
+
               return (
                 <div
                   key={section.id}
                   className={`absolute top-0 h-full group cursor-pointer z-10 ${hoverBgClass}`}
                   style={{
                     left: `${(section.start / duration) * 100}%`,
-                    width: `${((section.end - section.start) / duration) * 100}%`,
+                    width: `${((end - section.start) / duration) * 100}%`,
                     maxWidth: "100%",
                   }}
                   onClick={handleSectionClick}
@@ -355,7 +358,7 @@ export function AudioWaveform({
                        Оценка: {formatScoreAsPercentage(section.score)}%
                     </div>
                     <div className="text-gray-300">
-                      {formatTime(section.start)} - {formatTime(section.end)}
+                      {formatTime(section.start)} - {formatTime(end)}
                     </div>
                   </div>
                 </div>

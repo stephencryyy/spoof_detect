@@ -241,7 +241,7 @@ class AudioAnalysisServicer(audio_analyzer_pb2_grpc.AudioAnalysisServicer): # И
             loading_attempt_errors = [] # Локальный список ошибок для этой сессии загрузки
 
             try:
-                for format_to_try in ["wav", "mp3", "flac", "webm"]:
+                for format_to_try in ["wav", "mp3", "flac", "webm", "ogg"]:
                     # Создаем НОВЫЙ поток для КАЖДОЙ попытки формата
                     audio_stream_for_format = io.BytesIO(audio_content_bytes)
                     try:

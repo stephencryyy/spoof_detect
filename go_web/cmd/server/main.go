@@ -84,12 +84,23 @@ func main() {
 	userRepo := database.NewUserRepository(db, appLogger)
 	audioRepo := database.NewAudioRepository(db, appLogger)
 	audioTaskRepo := database.NewAudioProcessingTaskRepository(db, appLogger) // Initialize AudioProcessingTaskRepository
+	audioHistoryRepo := database.NewAudioHistoryRepository(db, appLogger)     // Initialize AudioHistoryRepository
 
 	authSvc := auth.NewAuthService(cfg.JWT.SecretKey, cfg.JWT.ExpirationHours, userRepo)
 
 	userHandler := handlers.NewUserHandler(authSvc, userRepo, appLogger)
-	// Pass pyAnalyzerClient and audioTaskRepo to NewAudioHandler
-	audioHandler := handlers.NewAudioHandler(s3Svc, audioRepo, audioTaskRepo, pyAnalyzerClient, cfg, appLogger)
+	// Pass pyAnalyzerClient, audioTaskRepo and audioHistoryRepo to NewAudioHandler
+	audioHandler := handlers.NewAudioHandler(
+		s3Svc,
+		audioRepo,
+		audioTaskRepo,
+		pyAnalyzerClient,
+		cfg,
+		appLogger,
+		audioHistoryRepo, // без амперсанда, если это интерфейс
+		userRepo)         // добавлен userRepo
+
+	audioHistoryHandler := handlers.NewAudioHistoryHandler(audioHistoryRepo, appLogger) // Initialize AudioHistoryHandler
 
 	// Setup routes
 	apiV1 := router.Group("/api/v1")
@@ -105,6 +116,14 @@ func main() {
 		audioRoutes.Use(authMW)
 		{
 			audioRoutes.POST("/upload", audioHandler.UploadAudioFile)
+		}
+
+		historyRoutes := apiV1.Group("/history")
+		historyRoutes.Use(authMW)
+		{
+			historyRoutes.GET("", audioHistoryHandler.GetHistory)                     // GET /api/v1/history
+			historyRoutes.DELETE("", audioHistoryHandler.ClearHistory)                // DELETE /api/v1/history
+			historyRoutes.DELETE("/:entryId", audioHistoryHandler.DeleteHistoryEntry) // DELETE /api/v1/history/:entryId
 		}
 	}
 

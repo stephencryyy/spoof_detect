@@ -147,8 +147,17 @@ export function UploadForm() {
                                 actualMimeType.includes('webm') ? 'webm' : 
                                 actualMimeType.includes('ogg') ? 'ogg' : 'audio';
 
+          // Формируем имя файла в формате Recording_дата_часы:минуты(по мск).wav
+          const now = new Date();
+          // Получаем московское время (UTC+3)
+          const utc = now.getTime() + now.getTimezoneOffset() * 60000;
+          const msk = new Date(utc + 3 * 60 * 60000);
+          const pad = (n: number) => n.toString().padStart(2, '0');
+          const dateStr = `${pad(msk.getDate())}-${pad(msk.getMonth() + 1)}-${pad(msk.getFullYear())}`;
+          const timeStr = `${pad(msk.getHours())}:${pad(msk.getMinutes())}`;
+          const audioFileName = `Audiofile_${dateStr}_${timeStr}.${fileExtension}`;
+
           const audioBlob = new Blob(audioChunksRef.current, { type: actualMimeType });
-          const audioFileName = `recording-${new Date().toISOString()}.${fileExtension}`;
           const recordedFile = new File([audioBlob], audioFileName, { type: actualMimeType });
           
           setFile(recordedFile);

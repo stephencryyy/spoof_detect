@@ -2,7 +2,9 @@ package handlers
 
 import (
 	"context"
+	"encoding/json" // Added for marshaling analysis results
 	"fmt"
+	"math" // Added for rounding probabilities
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -58,6 +60,8 @@ type AudioHandler struct {
 	audioRepo        models.AudioRepository
 	audioTaskRepo    models.AudioProcessingTaskRepository
 	pyAnalyzerClient grpc_clients.PythonAudioAnalyzerClient
+	audioHistoryRepo models.AudioHistoryRepository // Added for history
+	userRepo         models.UserRepository         // NEW: userRepo for user checks
 	appConfig        *config.Config
 	logger           *logger.Logger
 }
@@ -70,12 +74,16 @@ func NewAudioHandler(
 	pyClient grpc_clients.PythonAudioAnalyzerClient,
 	cfg *config.Config,
 	appLogger *logger.Logger,
+	audioHistoryRepo models.AudioHistoryRepository, // Added for history
+	userRepo models.UserRepository, // NEW: userRepo for user checks
 ) *AudioHandler {
 	return &AudioHandler{
 		s3Service:        s3Svc,
 		audioRepo:        audioRepo,
 		audioTaskRepo:    audioTaskRepo,
 		pyAnalyzerClient: pyClient,
+		audioHistoryRepo: audioHistoryRepo, // Added for history
+		userRepo:         userRepo,         // NEW: userRepo for user checks
 		appConfig:        cfg,
 		logger:           appLogger,
 	}
@@ -136,6 +144,14 @@ func (h *AudioHandler) UploadAudioFile(c *gin.Context) {
 
 	h.logger.Info("Attempting to upload to S3", zap.String("s3_key", s3Key), zap.String("content_type", contentType))
 
+	// Проверка существования пользователя перед сохранением аудиофайла
+	user, err := h.userRepo.GetUserByID(userID.String())
+	if err != nil || user == nil {
+		h.logger.Warn("User not found in DB for audio upload", zap.String("user_id", userID.String()), zap.Error(err))
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not found or deleted. Please re-login."})
+		return
+	}
+
 	fileURL, err := h.s3Service.UploadFile(c.Request.Context(), s3Key, file, contentType)
 	if err != nil {
 		h.logger.Error("Failed to upload file to S3", zap.String("s3_key", s3Key), zap.Error(err))
@@ -154,9 +170,12 @@ func (h *AudioHandler) UploadAudioFile(c *gin.Context) {
 	}
 
 	if saveErr := h.audioRepo.SaveAudioFile(c.Request.Context(), audioFileMetadata); saveErr != nil {
-		h.logger.Error("Failed to save audio metadata to DB", zap.String("s3_key", s3Key), zap.Error(err))
+		h.logger.Error("Failed to save audio metadata to DB", zap.String("s3_key", s3Key), zap.Error(saveErr))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save audio file metadata"})
 		return
+	} else if saveErr == nil {
+		// Диагностический лог: если вдруг логгер вызывается с nil ошибкой
+		h.logger.Debug("Audio metadata saved to DB without error", zap.String("s3_key", s3Key))
 	}
 
 	h.logger.Info("Audio file uploaded and metadata saved. Triggering gRPC analysis...",
@@ -218,6 +237,53 @@ func (h *AudioHandler) UploadAudioFile(c *gin.Context) {
 		h.logger.Info("Detailed Analysis Results:", zap.Any("results", apiResponse.AnalysisResults))
 	} else {
 		h.logger.Info("No analysis results to log.")
+	}
+
+	// Save to history after successful analysis or even if analysis had errors but upload was fine
+	// We need to decide what probability to store. For now, let's assume an overall probability
+	// might be derived or a default one used if detailed predictions are not the focus for the main history list.
+	// For simplicity, if there are predictions, we can average them or take the highest.
+	// If no predictions or error, maybe store a specific value or null.
+	// Let's assume for now we store a general probability if available, or 0 if not.
+
+	// For demonstration, let's calculate an average probability from analysis results if available.
+	var overallProbability float64
+	if len(apiResponse.AnalysisResults) > 0 {
+		var sumPercent float64
+		for _, res := range apiResponse.AnalysisResults {
+			percent := math.Round(float64(res.Score) * 100)
+			sumPercent += percent
+		}
+		overallProbability = math.Round(sumPercent / float64(len(apiResponse.AnalysisResults)))
+	}
+
+	// Convert apiResponse.AnalysisResults to json.RawMessage for storage
+	var analysisDetailsJSON []byte
+	if len(apiResponse.AnalysisResults) > 0 {
+		var errMarshal error
+		analysisDetailsJSON, errMarshal = json.Marshal(apiResponse.AnalysisResults)
+		if errMarshal != nil {
+			h.logger.Error("Failed to marshal analysis results for history", zap.Error(errMarshal), zap.String("s3_key", s3Key))
+			// Decide if this is critical enough to prevent history saving or just log
+		}
+	}
+
+	historyEntry := &models.AudioHistoryEntry{
+		ID:              uuid.New(),
+		UserID:          userID,
+		Filename:        originalFilename,
+		FileSize:        fmt.Sprintf("%.2f KB", float64(header.Size)/1024), // Or store raw bytes and format in frontend
+		Probability:     overallProbability,                                // Теперь это целое число процентов
+		S3Key:           &s3Key,
+		OriginalFileID:  &audioFileMetadata.ID,
+		AnalysisDetails: analysisDetailsJSON, // Store marshaled results
+		AnalysisDate:    time.Now(),
+	}
+
+	if err := h.audioHistoryRepo.CreateAudioHistoryEntry(historyEntry); err != nil {
+		h.logger.Error("Failed to save audio analysis to history", zap.Error(err), zap.String("user_id", userID.String()), zap.String("s3_key", s3Key))
+		// Do not fail the main request for this, just log it.
+		// The main operation (upload and analysis) might have succeeded.
 	}
 
 	c.JSON(http.StatusCreated, apiResponse)

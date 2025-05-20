@@ -43,4 +43,20 @@ CREATE TABLE IF NOT EXISTS audio_files (
 );
 
 CREATE INDEX IF NOT EXISTS idx_audio_files_user_id ON audio_files(user_id);
-CREATE INDEX IF NOT EXISTS idx_audio_files_s3_key ON audio_files(s3_key); 
+CREATE INDEX IF NOT EXISTS idx_audio_files_s3_key ON audio_files(s3_key);
+
+-- Create audio_history table
+CREATE TABLE IF NOT EXISTS audio_history (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    filename VARCHAR(255) NOT NULL,
+    file_size VARCHAR(50), -- Storing as VARCHAR as in frontend, consider BIGINT if only numeric bytes
+    analysis_date TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    probability REAL NOT NULL, -- Using REAL for floating point numbers like probability
+    s3_key VARCHAR(512), -- Optional: if you want to link to the stored audio file
+    original_file_id UUID REFERENCES audio_files(id) ON DELETE SET NULL, -- Optional: link to the original audio_files entry
+    analysis_details JSONB -- Optional: for storing detailed analysis results if any
+);
+
+CREATE INDEX IF NOT EXISTS idx_audio_history_user_id ON audio_history(user_id);
+CREATE INDEX IF NOT EXISTS idx_audio_history_analysis_date ON audio_history(analysis_date DESC);

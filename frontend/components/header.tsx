@@ -62,7 +62,7 @@ export function Header() {
     // Вместо window.location.href для Next.js лучше использовать router.push, 
     // но router не инициализирован здесь. Для простоты пока оставим window.location.href
     // или можно будет передать router или использовать хук useRouter, если компонент будет этого требовать.
-    window.location.href = "/auth/login" 
+    window.location.href = "/"
   }
 
   return (

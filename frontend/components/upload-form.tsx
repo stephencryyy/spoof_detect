@@ -20,14 +20,7 @@ export interface SuspiciousSection {
   chunk_id: string;
 }
 
-interface HistoryItem {
-  id: string
-  filename: string
-  fileSize: string
-  date: string
-  probability: number
-  analysis_results?: AnalysisResultItem[]
-}
+// Интерфейс HistoryItem удален, так как история теперь управляется через API и ApiHistoryItem
 
 export function UploadForm() {
   const [file, setFile] = useState<File | null>(null)
@@ -281,7 +274,6 @@ export function UploadForm() {
           chunk_id: item.chunk_id,
         }));
         setSuspiciousSections(newSuspiciousSections);
-        saveToHistory(file, newSuspiciousSections.reduce((acc, s) => acc + s.probability, 0) / (newSuspiciousSections.length || 1), data.analysis_results);
       } else if (!data.error && !data.analysis_error) {
         setAnalysisResultsApi([]); 
         setSuspiciousSections([]);
@@ -327,25 +319,7 @@ export function UploadForm() {
     return `${minutes.toString().padStart(2, "0")}:${remainingSeconds.toString().padStart(2, "0")}`;
   };
 
-  const saveToHistory = (audioFile: File, probability: number, apiResults?: AnalysisResultItem[]) => {
-    try {
-      const newHistoryItem: HistoryItem = {
-        id: Date.now().toString(),
-        filename: audioFile.name,
-        fileSize: (audioFile.size / 1024 / 1024).toFixed(2) + " MB",
-        date: new Date().toLocaleString(),
-        probability: parseFloat(probability.toFixed(2)),
-        analysis_results: apiResults
-      };
-      const existingHistory = localStorage.getItem("audioCheckHistory");
-      const history: HistoryItem[] = existingHistory ? JSON.parse(existingHistory) : [];
-      history.unshift(newHistoryItem);
-      const limitedHistory = history.slice(0, 20);
-      localStorage.setItem("audioCheckHistory", JSON.stringify(limitedHistory));
-    } catch (error) {
-      console.error("Error saving to history:", error);
-    }
-  };
+  // Функция saveToHistory удалена, так как история теперь управляется через API.
 
   const handleRetry = () => {
     if (localFileBlobUrl) {

@@ -1,7 +1,6 @@
 "use client"
 
 import type React from "react"
-
 import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
@@ -9,7 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent } from "@/components/ui/card"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { AlertCircle, Loader2 } from "lucide-react"
+import { AlertCircle, Loader2, Eye, EyeOff } from "lucide-react"
 import { registerUser } from "../../lib/api"
 import type { RegistrationRequest } from "../../lib/types"
 
@@ -19,9 +18,12 @@ export function RegisterForm() {
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [confirmPassword, setConfirmPassword] = useState("")
+  const [showPassword, setShowPassword] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
+
+  const toggleShowPassword = () => setShowPassword(prev => !prev)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -41,25 +43,14 @@ export function RegisterForm() {
       return
     }
 
-    const userData: RegistrationRequest = {
-      username: name,
-      email,
-      password,
-    }
+    const userData: RegistrationRequest = { username: name, email, password }
 
     try {
-      const response = await registerUser(userData)
+      await registerUser(userData)
       setSuccessMessage("Регистрация прошла успешна. Вы будете перенаправлены на страницу входа.")
-      setTimeout(() => {
-        router.push("/auth/login")
-      }, 3000)
-
+      setTimeout(() => router.push("/auth/login"), 3000)
     } catch (err) {
-      if (err instanceof Error) {
-        setError(err.message)
-      } else {
-        setError("Ошибка при регистрации. Пожалуйста, попробуйте снова.")
-      }
+      setError(err instanceof Error ? err.message : "Ошибка при регистрации. Пожалуйста, попробуйте снова.")
     } finally {
       setIsLoading(false)
     }
@@ -100,7 +91,7 @@ export function RegisterForm() {
             <Input
               id="email"
               type="email"
-              placeholder="your@email.com"
+              placeholder="you@example.com"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
@@ -110,27 +101,57 @@ export function RegisterForm() {
 
           <div className="space-y-2">
             <Label htmlFor="password">Пароль</Label>
-            <Input
-              id="password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              minLength={8}
-              disabled={isLoading}
-            />
+            <div className="relative">
+              <Input
+                id="password"
+                type={showPassword ? "text" : "password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                minLength={8}
+                disabled={isLoading}
+                className="pr-12"
+              />
+              <button
+                type="button"
+                onClick={toggleShowPassword}
+                disabled={isLoading}
+                className="absolute inset-y-0 right-3 flex items-center"
+              >
+                {showPassword ? (
+                  <Eye className="h-5 w-5 text-[#6a50d3]" />
+                ) : (
+                  <EyeOff className="h-5 w-5 text-gray-400" />
+                )}
+              </button>
+            </div>
           </div>
 
           <div className="space-y-2">
             <Label htmlFor="confirmPassword">Подтвердите пароль</Label>
-            <Input
-              id="confirmPassword"
-              type="password"
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-              required
-              disabled={isLoading}
-            />
+            <div className="relative">
+              <Input
+                id="confirmPassword"
+                type={showPassword ? "text" : "password"}
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                required
+                disabled={isLoading}
+                className="pr-12"
+              />
+              <button
+                type="button"
+                onClick={toggleShowPassword}
+                disabled={isLoading}
+                className="absolute inset-y-0 right-3 flex items-center"
+              >
+                {showPassword ? (
+                  <Eye className="h-5 w-5 text-[#6a50d3]" />
+                ) : (
+                  <EyeOff className="h-5 w-5 text-gray-400" />
+                )}
+              </button>
+            </div>
           </div>
 
           <Button type="submit" className="w-full bg-[#6a50d3] hover:bg-[#5f43cc]" disabled={isLoading}>

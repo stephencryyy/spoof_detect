@@ -117,10 +117,12 @@ export function AudioWaveform({
 
     const newDisplayableSections: WaveformSectionData[] = analysisData.map(item => {
       const probability = item.score * 100
-      let color = 'rgba(0, 255, 0, 0.1)'
-      if (probability > 70) {
+      let color = 'rgba(0, 255, 0, 0.1)' // Green (default)
+      if (probability >= 75) { // Red from 75%
         color = 'rgba(255, 0, 0, 0.2)'
-      } else if (probability > 40) {
+      } else if (probability >= 50) { // Orange from 50%
+        color = 'rgba(255, 165, 0, 0.2)' 
+      } else if (probability >= 25) { // Yellow from 25%
         color = 'rgba(255, 255, 0, 0.2)'
       }
 
@@ -146,35 +148,40 @@ export function AudioWaveform({
   }, [analysisData, duration])
 
   useEffect(() => {
-    if (duration <= 0 || !gridLinesRef.current) return
-    gridLinesRef.current.innerHTML = ""
-    const numberOfSegments = displayableSections.length > 0 ? displayableSections.length : Math.floor(duration / 4) || 1
+    if (duration <= 0 || !gridLinesRef.current) return;
+    gridLinesRef.current.innerHTML = "";
 
-    for (let i = 0; i < numberOfSegments; i++) {
-        const section = displayableSections[i]
-        const lineStart = section ? section.start : i * 4
-        if (lineStart > 0) {
-            const position = (lineStart / duration) * 100
-            if (position < 100) {
-      const line = document.createElement("div")
-                 line.className = "absolute top-0 h-full w-[1px] bg-purple-300 bg-opacity-40"
-      line.style.left = `${position}%`
-                 gridLinesRef.current.appendChild(line)
-            }
-        }
-    }
-     if (displayableSections.length > 0) {
-        const lastSection = displayableSections[displayableSections.length - 1]
-        const lastPosition = (lastSection.end / duration) * 100
-        if (lastPosition <= 100) {
-            const line = document.createElement("div")
-            line.className = "absolute top-0 h-full w-[1px] bg-purple-300 bg-opacity-40"
-            line.style.left = `${lastPosition}%`
-      gridLinesRef.current.appendChild(line)
-        }
-    }
+    const drawLineAtTime = (timeValue: number, isEndOfAudioOrSection: boolean = false) => {
+      const position = (timeValue / duration) * 100;
+      // Линии для интервалов рисуем, если position < 100.
+      // Линию на самом конце аудио или секции рисуем, если position <= 100.
+      if (timeValue > 0 && (position < 100 || (isEndOfAudioOrSection && position <= 100))) {
+        const line = document.createElement("div");
+        line.className = "absolute top-0 h-full w-[1px] bg-purple-300 bg-opacity-40";
+        line.style.left = `${position}%`;
+        gridLinesRef.current!.appendChild(line);
+      }
+    };
 
-  }, [duration, displayableSections])
+    if (displayableSections.length > 0) {
+      // Рисуем линии на основе реальных секций анализа
+      displayableSections.forEach(section => {
+        if (section.start > 0) { // Не рисуем линию в самом начале (0s)
+          drawLineAtTime(section.start);
+        }
+      });
+      const lastSection = displayableSections[displayableSections.length - 1];
+      // Убеждаемся, что конец последней секции отрисован, даже если он совпадает с длительностью аудио
+      drawLineAtTime(lastSection.end, true);
+    } else {
+      // Рисуем линии по умолчанию с интервалом в 4 секунды
+      for (let i = 1; (i * 4) < duration; i++) {
+        drawLineAtTime(i * 4);
+      }
+      // Всегда рисуем линию на самом конце аудио, если нет секций анализа
+      drawLineAtTime(duration, true);
+    }
+  }, [duration, displayableSections]);
 
   // Animation loop for progress updates
   const animationLoop = useCallback(() => {

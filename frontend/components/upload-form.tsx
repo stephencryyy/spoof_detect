@@ -33,6 +33,10 @@ export function UploadForm() {
     analyzeAudio, resetAnalysisStates 
   } = audioAnalysisOriginal
 
+  useEffect(() => {
+    console.log("[UploadForm] analysisResultsApi updated:", analysisResultsApi);
+  }, [analysisResultsApi]);
+
   const [activePlayerKey, setActivePlayerKey] = useState<string | null>(null)
   const [activePlayerProgress, setActivePlayerProgress] = useState<{ key: string, current: number, total: number } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)

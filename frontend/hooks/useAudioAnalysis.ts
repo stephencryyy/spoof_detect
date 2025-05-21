@@ -79,7 +79,7 @@ export function useAudioAnalysis(): AudioAnalysisControls {
         setAnalysisResultsApi(result.analysis_results || []);
 
         const uiSuspiciousSections: SuspiciousSection[] = (result.analysis_results || [])
-          .filter(item => item.score > 0.4 && item.chunk_id)
+          .filter(item => item.score > 0.25 && item.chunk_id)
           .map((item, index) => {
             const correctedEndTime = Math.min(item.end_time_seconds, totalAudioDuration);
             const correctedStartTime = Math.min(item.start_time_seconds, correctedEndTime);

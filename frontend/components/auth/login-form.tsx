@@ -78,9 +78,6 @@ export function LoginForm() {
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <Label htmlFor="password">Пароль</Label>
-              <a href="#" className="text-xs text-[#6a50d3] hover:underline">
-                Забыли пароль?
-              </a>
             </div>
             <div className="relative">
               <Input

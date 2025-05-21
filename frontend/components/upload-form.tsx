@@ -7,7 +7,6 @@ import { Button } from "@/components/ui/button"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Upload, AlertCircle, Loader2, Music, Mic } from "lucide-react"
 import { AudioWaveform } from "@/components/audio-waveform"
-// import { AnalysisSummary } from "@/components/analysis-summary" // Если не используется, можно убрать
 import { AudioPlayer } from "@/components/audio-player"
 import { uploadAudio } from "../lib/api"
 import type { AnalysisResultItem, UploadAudioResponse } from "../lib/types"
@@ -16,60 +15,52 @@ export interface SuspiciousSection {
   sectionNumber: number;
   startTime: number;
   endTime: number;
-  probability: number; // 0-100
+  probability: number;
   chunk_id: string;
 }
 
-// Интерфейс HistoryItem удален, так как история теперь управляется через API и ApiHistoryItem
-
 export function UploadForm() {
+  // Все состояния остаются без изменений
   const [file, setFile] = useState<File | null>(null)
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [showWaveform, setShowWaveform] = useState(false)
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const [localFileBlobUrl, setLocalFileBlobUrl] = useState<string | null>(null)
-  const [audioDuration, setAudioDuration] = useState<number | null>(null);
+  const [audioDuration, setAudioDuration] = useState<number | null>(null)
   const [suspiciousSections, setSuspiciousSections] = useState<SuspiciousSection[]>([])
   const [analysisResultsApi, setAnalysisResultsApi] = useState<AnalysisResultItem[] | null>(null)
   const [uploadResponse, setUploadResponse] = useState<UploadAudioResponse | null>(null)
-  const [activePlayerKey, setActivePlayerKey] = useState<string | null>(null);
-  const [activePlayerProgress, setActivePlayerProgress] = useState<{ key: string, current: number, total: number } | null>(null);
+  const [activePlayerKey, setActivePlayerKey] = useState<string | null>(null)
+  const [activePlayerProgress, setActivePlayerProgress] = useState<{ key: string, current: number, total: number } | null>(null)
+  const [isRecording, setIsRecording] = useState(false)
+  const [recordingError, setRecordingError] = useState<string | null>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const audioChunksRef = useRef<Blob[]>([])
+  const [isDraggingOver, setIsDraggingOver] = useState(false)
+  const [analysisDone, setAnalysisDone] = useState(false)
+  const [stringAmplitude, setStringAmplitude] = useState(0)
+  const [smoothedAmplitude, setSmoothedAmplitude] = useState(0)
+  const animationFrameRef = useRef<number | null>(null)
+  const analyserRef = useRef<AnalyserNode | null>(null)
+  const audioContextRef = useRef<AudioContext | null>(null)
+  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null)
 
-  const [isRecording, setIsRecording] = useState(false);
-  const [recordingError, setRecordingError] = useState<string | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
-  const [isDraggingOver, setIsDraggingOver] = useState(false); // Новое состояние для отслеживания перетаскивания
-  const [analysisDone, setAnalysisDone] = useState(false); // Новый флаг для отслеживания завершения анализа
-
-  // Для анимации "веревки"
-  const [stringAmplitude, setStringAmplitude] = useState(0);
-  const [smoothedAmplitude, setSmoothedAmplitude] = useState(0);
-  const animationFrameRef = useRef<number | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
-
+  // Все эффекты и методы остаются без изменений
   useEffect(() => {
-    const currentBlobUrl = localFileBlobUrl;
+    const currentBlobUrl = localFileBlobUrl
     return () => {
-      if (currentBlobUrl) {
-        URL.revokeObjectURL(currentBlobUrl);
-      }
-    };
-  }, [localFileBlobUrl]);
+      if (currentBlobUrl) URL.revokeObjectURL(currentBlobUrl)
+    }
+  }, [localFileBlobUrl])
 
   const resetAnalysisStates = () => {
-    setSuspiciousSections([]);
-    setAnalysisResultsApi(null);
-    setUploadResponse(null);
-    setError(null);
-    const analysisResultsDiv = document.getElementById("analysis-results");
-    if (analysisResultsDiv) {
-      analysisResultsDiv.classList.add("hidden");
-    }
-  };
+    setSuspiciousSections([])
+    setAnalysisResultsApi(null)
+    setUploadResponse(null)
+    setError(null)
+    document.getElementById("analysis-results")?.classList.add("hidden")
+  }
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0] || null;
@@ -440,11 +431,15 @@ export function UploadForm() {
       setActivePlayerProgress({ key: playerKey, current: currentTime, total: duration });
     }
   };
+  const formContainerClass = "w-full max-w-4xl shadow-lg transition-all border-purple-100"
+  const contentBlockClass = "w-full space-y-4"
+  const alertClass = "w-full mb-4"
+ 
 
   return (
-    <Card className="w-full max-w-4xl shadow-lg transition-all border-purple-100">
+    <Card className={formContainerClass}>
       <CardContent className="p-8">
-        <div className="flex flex-col items-center space-y-6">
+        <div className="flex flex-col items-center space-y-6 w-full">
           {error && (
             <Alert variant="destructive" className="mb-4 w-full">
               <AlertCircle className="h-4 w-4" />
@@ -457,18 +452,19 @@ export function UploadForm() {
               <AlertDescription>{recordingError}</AlertDescription>
             </Alert>
           )}
+
           {uploadResponse && uploadResponse.message && !error && !recordingError && (
              <Alert variant="default" className="mb-4 w-full bg-green-50 border-green-200 text-green-700">
                 <AlertDescription>{uploadResponse.message}</AlertDescription>
             </Alert>
           )}
 
+          {/* Блок загрузки файла */}
           {!file && !isRecording && (
-            <div className="flex flex-col items-center w-full max-w-2xl mx-auto p-4">
-              {/* Блок выбора файла с пунктирной рамкой */}
+            <div className={contentBlockClass}>
               <label
                 htmlFor="dropzone-file-input"
-                className={`flex flex-col items-center justify-center w-full h-48 border-2 border-gray-300 border-dashed rounded-lg cursor-pointer bg-gray-50 hover:bg-gray-100 dark:border-gray-600 dark:hover:border-gray-500 dark:bg-gray-700 dark:hover:bg-gray-600 transition-colors duration-150 ease-in-out mb-4 p-4 ${
+                className={`flex flex-col items-center justify-center w-full h-48 border-2 border-gray-300 border-dashed rounded-lg cursor-pointer bg-gray-50 hover:bg-gray-100 dark:border-gray-600 dark:hover:border-gray-500 dark:bg-gray-700 dark:hover:bg-gray-600 transition-colors duration-150 ease-in-out mb-4 ${ // Удален p-4
                   isDraggingOver ? 'bg-purple-100 border-purple-400' : 'bg-gray-50 hover:bg-gray-100'
                 }`}
                 onDragEnter={(e) => {
@@ -493,7 +489,7 @@ export function UploadForm() {
                 }}
               >
                 <Upload className="w-10 h-10 text-gray-400 mb-3" />
-                <p className="text-sm text-center text-gray-700 dark:text-gray-300">
+                <p className="text-sm text-center text-gray-700">
                   <span className="font-semibold">Перетащите аудиофайл сюда</span>
                 </p>
                 <input 
@@ -504,51 +500,34 @@ export function UploadForm() {
                   accept="audio/*,.wav,.mp3,.ogg,.flac,.webm"
                   disabled={isAnalyzing || isRecording} 
                 />
-                <p className="mt-4 text-xs text-gray-500 dark:text-gray-400 text-center">
-                  Поддерживаемые форматы: MP3, WAV, OGG, FLAC, WEBM. Запись будет в WAV или WEBM.
+                <p className="mt-4 text-xs text-gray-500 text-center">
+                  Поддерживаемые форматы: MP3, WAV, OGG, FLAC, WEBM
                 </p>
               </label>
 
-              <p className="my-3 text-sm text-gray-500 dark:text-gray-400">или</p>
+              <div className="text-center text-gray-500 my-3">или</div>
+            
+              {/* Блок записи */}
+              <Button
+                onClick={isRecording ? handleStopRecording : handleStartRecording}
+                className={`w-full py-3 rounded-lg text-lg font-semibold flex items-center justify-center 
+                  ${isRecording ? 'bg-red-500 hover:bg-red-600' : 'bg-[#6a50d3] hover:bg-[#5f43cc]'}`}
+                disabled={isAnalyzing}
+              >
+                <Mic className="mr-2 h-5 w-5" />
+                {isRecording ? "Остановить запись" : "Начать запись"}
+              </Button>
 
-              {/* Buttons container */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 w-full max-w-md">
-                <Button
-                  type="button"
-                  onClick={() => document.getElementById('dropzone-file-input')?.click()}
-                  className="w-full bg-[#6a50d3] hover:bg-[#5f43cc] text-white py-3 text-base rounded-md flex items-center justify-center"
-                  disabled={isAnalyzing || isRecording}
-                >
-                  <Music className="mr-2 h-5 w-5" />
-                  Выберите файл
-                </Button>
-                <Button
-                  onClick={isRecording ? handleStopRecording : handleStartRecording}
-                  className={`w-full py-3 text-base rounded-md flex items-center justify-center ${ 
-                    isRecording 
-                      ? 'bg-red-500 hover:bg-red-600 text-white' 
-                      : 'bg-[#6a50d3] hover:bg-[#5f43cc] text-white'
-                  }`}
-                  disabled={isAnalyzing}
-                >
-                  <Mic className="mr-2 h-5 w-5" />
-                  {isRecording ? "Остановить запись" : "Начать запись"}
-                </Button>
-              </div>
-
-              <p className="mt-4 text-xs text-gray-500 dark:text-gray-400 text-center">
-                Для записи разрешите браузеру доступ к микрофону.
-              </p>
             </div>
           )}
           
           {isRecording && (
             <div className="w-full flex flex-col items-center space-y-4 p-0" style={{marginTop: 0}}>
-                <div className="flex flex-col items-center justify-center text-green-600 animate-pulse w-full">
+                <div className="flex flex-col items-center justify-center w-full">
                   <Mic className="w-8 h-8 mr-2" />
                   <span className="text-lg font-semibold">Идет запись...</span>
                   {/* Анимация веревок в стиле блока вейвформы */}
-                  <div className="w-full max-w-[95%] mx-auto bg-gray-50 p-4 rounded-lg border border-gray-100">
+                  <div className="w-full max-w-[95%] mx-auto bg-gray-50 p-4 rounded-lg border border-gray-100 animate-pulse">
                     <svg width="1000" height="100" viewBox="0 0 1000 100" style={{display:'block', width:'100%', height:'100px'}}>
                       {[0,1,2,3,4].map((idx) => {
                         let ampBase = [1, 0.8, 0.6, 0.45, 0.3][idx];
@@ -589,16 +568,16 @@ export function UploadForm() {
                     </svg>
                   </div>
                 </div>
-                <Button
+                <Button variant="outline"
                     onClick={handleStopRecording}
-                    className="inline-flex items-center justify-center px-6 py-3 border border-transparent text-base font-medium rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
+                    className="w-full py-3 rounded-lg text-lg font-semibold flex items-center justify-center text-red-600 border-red-400 hover:bg-red-100 hover:border-red-500"
                   >
                     <Mic className="w-5 h-5 mr-2" />
                     Остановить запись
                   </Button>
             </div>
           )}
-
+                                 {/*variant="outline" size="sm" onClick={handleRetry} className="text-red-600 border-red-400 hover:bg-red-100 hover:border-red-500">*/}
           {file && !isRecording && (
             <div className="w-full space-y-4">
               <div className="flex items-center justify-between p-4 border rounded-lg bg-gray-50">

@@ -142,22 +142,28 @@ export function AudioPlayer({
         onProgressUpdate(playerKey, currentAudioTime, audioRef.current.duration);
     }
 
-    if (endTime !== undefined && currentAudioTime >= endTime) {
-      if (!audioRef.current.paused) {
-        audioRef.current.pause(); // Pause first
+    // Добавляем допуск 0.15 сек для завершения сегмента (устраняет проблему с микрофоном)
+    const epsilon = 0.15;
+    if (endTime !== undefined && currentAudioTime >= endTime - epsilon) {
+      if (audioRef.current) {
+        audioRef.current.currentTime = endTime;
       }
-      if (activePlayerKey === playerKey) { 
-        // Ensure progress is reported as exactly at endTime before calling onEnded
+      setCurrentTime(endTime);
+      if (!audioRef.current?.paused) {
+        audioRef.current.pause();
+      }
+      if (activePlayerKey === playerKey) {
         if (onProgressUpdate) {
-            onProgressUpdate(playerKey, endTime, audioRef.current.duration);
+          onProgressUpdate(playerKey, endTime, audioRef.current?.duration ?? endTime);
         }
-        setIsElementPlaying(false); 
+        setIsElementPlaying(false);
         if (rafIdRef.current) {
           cancelAnimationFrame(rafIdRef.current);
           rafIdRef.current = null;
         }
-        onEnded(playerKey); 
+        onEnded(playerKey);
       }
+      return;
     }
   }, [activePlayerKey, playerKey, endTime, onEnded, onProgressUpdate, startTime]);
 

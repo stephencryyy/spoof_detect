@@ -42,11 +42,7 @@ export function useFileHandler(): FileHandlerControls {
   }, [audioUrl]); // This effect runs when audioUrl changes or the component unmounts
 
   const processFile = useCallback((selectedFile: File | null) => {
-    // Setting audioUrl to null here will trigger the useEffect cleanup for the *current* audioUrlRef.current
-    // This ensures the old URL is revoked before a new one is potentially created.
     setAudioUrl(null);
-
-    // Reset other states
     setFile(null);
     setAudioDuration(null);
     setShowWaveform(false);
@@ -60,22 +56,42 @@ export function useFileHandler(): FileHandlerControls {
 
       setFile(selectedFile);
       const newBlobUrl = URL.createObjectURL(selectedFile);
-      setAudioUrl(newBlobUrl); // This updates audioUrl, and the useEffect will store it in audioUrlRef
+      setAudioUrl(newBlobUrl);
 
       const audioElement = new Audio(newBlobUrl);
       audioElement.onloadedmetadata = () => {
-        setAudioDuration(audioElement.duration);
+        // Если длительность не определилась, пробуем fallback через FileReader + AudioContext
+        if (isFinite(audioElement.duration) && audioElement.duration > 0) {
+          setAudioDuration(audioElement.duration);
+        } else {
+          // Fallback: пробуем получить длительность через AudioContext
+          try {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+              if (e.target && e.target.result) {
+                const context = new (window.AudioContext || (window as any).webkitAudioContext)();
+                context.decodeAudioData(e.target.result as ArrayBuffer, (buffer) => {
+                  setAudioDuration(buffer.duration);
+                  context.close();
+                }, () => {
+                  setAudioDuration(0);
+                  context.close();
+                });
+              }
+            };
+            reader.readAsArrayBuffer(selectedFile);
+          } catch {
+            setAudioDuration(0);
+          }
+        }
         setShowWaveform(true);
       };
       audioElement.onerror = () => {
         setFileError('Не удалось загрузить метаданные аудиофайла.');
         setShowWaveform(false);
-        // If loading the new URL fails, setAudioUrl(null) to trigger its revocation via useEffect.
-        // The newBlobUrl that failed might be revoked by this call if it became audioUrlRef.current.
         setAudioUrl(null); 
-        setFile(null); // Also clear the file state
-        setAudioDuration(null);
-        // It's also safe to directly revoke newBlobUrl here as it was problematic.
+        setFile(null);
+        setAudioDuration(0); // Ставим 0, чтобы всегда было число
         URL.revokeObjectURL(newBlobUrl); 
       };
     }
@@ -142,4 +158,4 @@ export function useFileHandler(): FileHandlerControls {
     setShowWaveform,
     setAudioDuration
   };
-} 
+}

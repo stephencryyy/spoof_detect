@@ -78,15 +78,29 @@ export function useAudioAnalysis(): AudioAnalysisControls {
         setAnalysisSuccessMessage(result.message || 'Анализ успешно завершен.');
         setAnalysisResultsApi(result.analysis_results || []);
 
-        const uiSuspiciousSections: SuspiciousSection[] = (result.analysis_results || [])
-          .filter(item => item.score > 0.4 && item.chunk_id)
+        const apiResults = result.analysis_results || [];
+        // Корректируем endTime последнего сегмента, если он чуть больше длительности файла (например, из-за MediaRecorder)
+        let maxEndTime = 0;
+        apiResults.forEach(item => {
+          if (item.end_time_seconds > maxEndTime) maxEndTime = item.end_time_seconds;
+        });
+        let durationForCorrection = totalAudioDuration;
+        // Если последний сегмент выходит за пределы файла не более чем на 0.2 сек, считаем это погрешностью и подрезаем
+        if (maxEndTime > totalAudioDuration && maxEndTime - totalAudioDuration < 0.25) {
+          durationForCorrection = maxEndTime;
+        }
+        const uiSuspiciousSections: SuspiciousSection[] = apiResults
+          .filter(item => item.score > 0.25 && item.chunk_id)
           .map((item, index) => {
-            const correctedEndTime = Math.min(item.end_time_seconds, totalAudioDuration);
-            const correctedStartTime = Math.min(item.start_time_seconds, correctedEndTime);
-
-            console.log(`[useAudioAnalysis] Raw API times for suspicious item ${index + 1}: start_time_seconds=${item.start_time_seconds}, end_time_seconds=${item.end_time_seconds}, chunk_id=${item.chunk_id}`);
-            console.log(`[useAudioAnalysis] Corrected times for suspicious item ${index + 1}: startTime=${correctedStartTime}, endTime=${correctedEndTime}, totalAudioDuration=${totalAudioDuration}`);
-            
+            let correctedEndTime = Math.min(item.end_time_seconds, durationForCorrection);
+            let correctedStartTime = Math.min(item.start_time_seconds, correctedEndTime);
+            // Если это последний сегмент и его endTime почти совпадает с duration, выставляем точно duration
+            if (
+              item.end_time_seconds === maxEndTime &&
+              Math.abs(item.end_time_seconds - durationForCorrection) < 0.25
+            ) {
+              correctedEndTime = durationForCorrection;
+            }
             let actualChunkNumberLabel = item.chunk_id;
             if (item.chunk_id.startsWith('chunk_')) {
               const numberPart = item.chunk_id.substring('chunk_'.length);
@@ -95,10 +109,9 @@ export function useAudioAnalysis(): AudioAnalysisControls {
                 actualChunkNumberLabel = (numericId + 1).toString();
               }
             }
-
             if (correctedEndTime > correctedStartTime) {
               return {
-                sectionNumber: index + 1, 
+                sectionNumber: index + 1,
                 actualChunkNumberLabel: actualChunkNumberLabel,
                 startTime: correctedStartTime,
                 endTime: correctedEndTime,
@@ -106,24 +119,19 @@ export function useAudioAnalysis(): AudioAnalysisControls {
                 chunk_id: item.chunk_id
               };
             }
-            return null;
+            return undefined;
           })
-          .filter(Boolean as any as (value: SuspiciousSection | null) => value is SuspiciousSection);
-          
+          .filter((value): value is SuspiciousSection => Boolean(value));
         setSuspiciousSections(uiSuspiciousSections);
         setAnalysisDone(true);
-      } else {
-        setAnalysisError(result.message || 'Ответ от сервера не содержит результатов анализа или ошибок.');
-        setAnalysisDone(false);
       }
-    } catch (err) {
-      console.error('Analysis error:', err);
-      setAnalysisError(err instanceof Error ? err.message : 'Не удалось выполнить анализ.');
+    } catch (error) {
+      setAnalysisError('Произошла ошибка во время анализа аудио. Пожалуйста, попробуйте еще раз.');
       setAnalysisDone(false);
     } finally {
       setIsAnalyzing(false);
     }
-  }, []); 
+  }, []);
 
   return {
     isAnalyzing,
@@ -134,6 +142,6 @@ export function useAudioAnalysis(): AudioAnalysisControls {
     uploadResponse,
     analysisDone,
     analyzeAudio,
-    resetAnalysisStates,
+    resetAnalysisStates
   };
 }

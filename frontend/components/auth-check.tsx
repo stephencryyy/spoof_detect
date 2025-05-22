@@ -25,6 +25,10 @@ export function AuthCheck({ children }: AuthCheckProps) {
 
     if (!isLoggedIn && !isPublicRoute) {
       router.push("/auth/login")
+    } else if (isLoggedIn && (pathname === "/auth/login" || pathname === "/auth/register")) {
+      // Если пользователь авторизован и находится на странице входа или регистрации,
+      // перенаправляем его на главную страницу.
+      router.push("/")
     } else {
       setIsChecking(false)
     }

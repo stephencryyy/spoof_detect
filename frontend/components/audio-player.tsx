@@ -142,22 +142,28 @@ export function AudioPlayer({
         onProgressUpdate(playerKey, currentAudioTime, audioRef.current.duration);
     }
 
-    if (endTime !== undefined && currentAudioTime >= endTime) {
-      if (!audioRef.current.paused) {
-        audioRef.current.pause(); // Pause first
+    // Добавляем допуск 0.15 сек для завершения сегмента (устраняет проблему с микрофоном)
+    const epsilon = 0.15;
+    if (endTime !== undefined && currentAudioTime >= endTime - epsilon) {
+      if (audioRef.current) {
+        audioRef.current.currentTime = endTime;
       }
-      if (activePlayerKey === playerKey) { 
-        // Ensure progress is reported as exactly at endTime before calling onEnded
+      setCurrentTime(endTime);
+      if (!audioRef.current?.paused) {
+        audioRef.current.pause();
+      }
+      if (activePlayerKey === playerKey) {
         if (onProgressUpdate) {
-            onProgressUpdate(playerKey, endTime, audioRef.current.duration);
+          onProgressUpdate(playerKey, endTime, audioRef.current?.duration ?? endTime);
         }
-        setIsElementPlaying(false); 
+        setIsElementPlaying(false);
         if (rafIdRef.current) {
           cancelAnimationFrame(rafIdRef.current);
           rafIdRef.current = null;
         }
-        onEnded(playerKey); 
+        onEnded(playerKey);
       }
+      return;
     }
   }, [activePlayerKey, playerKey, endTime, onEnded, onProgressUpdate, startTime]);
 
@@ -250,13 +256,15 @@ export function AudioPlayer({
   }
 
   // Calculate display values based on whether it's a segment or full track
-  const trueDuration = duration; // Actual duration of the audio element
+  const trueDuration = duration;
   const segmentStartTime = startTime ?? 0;
-  const segmentEndTime = endTime ?? trueDuration; // If endTime not set, use full duration
+  const segmentEndTime = endTime ?? trueDuration;
   
   const displayableDuration = endTime !== undefined ? (endTime - segmentStartTime) : (trueDuration - segmentStartTime);
   let displayCurrentTime = currentTime - segmentStartTime;
-  displayCurrentTime = Math.max(0, Math.min(displayCurrentTime, displayableDuration));
+  // Если сегмент завершён или почти завершён, всегда показываем прогрессбар полностью
+  const isSegmentFinished = endTime !== undefined && (currentTime >= endTime + 0.25) && !isElementPlaying;
+  displayCurrentTime = isSegmentFinished ? displayableDuration : Math.max(0, Math.min(displayCurrentTime, displayableDuration));
 
 
   if (compact) {
@@ -278,9 +286,9 @@ export function AudioPlayer({
           {sectionName && <p className="text-xs font-medium text-gray-600 dark:text-gray-300">{sectionName}</p>}
           <Slider
             value={[displayCurrentTime]}
-            max={displayableDuration > 0 ? displayableDuration : 100} // Prevent max=0
+            max={displayableDuration > 0 ? displayableDuration : 100}
             step={0.1}
-            onValueChange={(value) => handleSeek([value[0] + segmentStartTime])} // Add segmentStartTime back for seeking on full audio
+            onValueChange={(value) => handleSeek([value[0] + segmentStartTime])}
             className="w-full [&>span:first-child]:h-1.5 [&>span:first-child>span]:h-1.5"
             aria-label="audio progress bar"
           />

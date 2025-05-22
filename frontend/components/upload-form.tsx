@@ -33,6 +33,10 @@ export function UploadForm() {
     analyzeAudio, resetAnalysisStates 
   } = audioAnalysisOriginal
 
+  useEffect(() => {
+    console.log("[UploadForm] analysisResultsApi updated:", analysisResultsApi);
+  }, [analysisResultsApi]);
+
   const [activePlayerKey, setActivePlayerKey] = useState<string | null>(null)
   const [activePlayerProgress, setActivePlayerProgress] = useState<{ key: string, current: number, total: number } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -114,10 +118,10 @@ export function UploadForm() {
     stopRecording()
   }
 
-  const formatTime = (seconds: number) => {
-    if (isNaN(seconds) || seconds < 0) return "00:00"
-    const minutes = Math.floor(seconds / 60)
-    const secondsRemainder = Math.floor(seconds % 60)
+  const formatTime = (seconds: number | null | undefined) => {
+    if (!isFinite(seconds as number) || seconds == null || seconds < 0) return "00:00";
+    const minutes = Math.floor((seconds as number) / 60);
+    const secondsRemainder = Math.floor((seconds as number) % 60);
     return `${minutes.toString().padStart(2, "0")}:${secondsRemainder.toString().padStart(2, "0")}`
   }
 
@@ -260,7 +264,7 @@ export function UploadForm() {
                       <p className="font-medium text-gray-800 dark:text-gray-200 truncate max-w-xs" title={file.name}>{file.name}</p>
                       <p className="text-sm text-gray-500 dark:text-gray-400">
                       {(file.size / 1024 / 1024).toFixed(2)} MB
-                        {(audioDuration !== null && audioDuration > 0) && ` (${formatTime(audioDuration)})`}
+                        {` (${formatTime(audioDuration ?? 0)})`}
                     </p>
                   </div>
                 </div>

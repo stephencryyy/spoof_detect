@@ -139,18 +139,6 @@ export function RegisterForm() {
                 disabled={isLoading}
                 className="pr-12"
               />
-              <button
-                type="button"
-                onClick={toggleShowPassword}
-                disabled={isLoading}
-                className="absolute inset-y-0 right-3 flex items-center"
-              >
-                {showPassword ? (
-                  <Eye className="h-5 w-5 text-[#6a50d3]" />
-                ) : (
-                  <EyeOff className="h-5 w-5 text-gray-400" />
-                )}
-              </button>
             </div>
           </div>
 

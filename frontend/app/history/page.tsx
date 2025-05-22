@@ -11,10 +11,9 @@ export default function HistoryPage() {
         <div className="max-w-4xl mx-auto relative">
           <Link
             href="/"
-            className="absolute left-0 top-1 flex items-center text-gray-500 hover:text-[#6a50d3] transition-colors"
+            className="absolute left-0 top-0 flex items-center text-gray-500 hover:text-[#6a50d3] transition-colors"
           >
             <ArrowLeft className="w-5 h-5" />
-            <span className="sr-only">Назад</span>
           </Link>
 
           <h2 className="text-2xl md:text-3xl font-bold text-center text-gray-800 mb-2">История проверок</h2>
